@@ -1,5 +1,6 @@
+// client/src/App.jsx
 import React, { useEffect, useState } from "react";
-import io from "socket.io-client";
+import socket from "./services/socket"; // <- استخدم ملف الخدمة المركزي
 import ClientsPage from "./pages/Clients";
 import Dashboard from "./pages/Dashboard";
 import Messages from "./pages/Messages";
@@ -7,8 +8,6 @@ import Templates from "./pages/Templates";
 import Analytics from "./pages/Analytics";
 import Sidebar from "./components/Sidebar";
 import QRModal from "./components/QRModal";
-
-const socket = io(import.meta.env.VITE_API_URL || "/");
 
 export const SocketContext = React.createContext(socket);
 
@@ -18,11 +17,27 @@ export default function App() {
   const [route, setRoute] = useState("dashboard");
 
   useEffect(() => {
+    // event listeners
     socket.on("wa:qr", (q) => setQr(q));
     socket.on("wa:ready", () => { setReady(true); setQr(null); });
     socket.on("wa:init_error", (e) => console.warn("wa init error", e));
+
+    // If socket connects/disconnects, update ready state
+    socket.on("connect", () => {
+      console.log("socket connected (client):", socket.id);
+      setReady(true);
+    });
+    socket.on("disconnect", () => {
+      console.log("socket disconnected (client)");
+      setReady(false);
+    });
+
     return () => {
-      socket.off("wa:qr"); socket.off("wa:ready"); socket.off("wa:init_error");
+      socket.off("wa:qr");
+      socket.off("wa:ready");
+      socket.off("wa:init_error");
+      socket.off("connect");
+      socket.off("disconnect");
     };
   }, []);
 
