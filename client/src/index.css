@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* theme variables */
+:root{
+  --brand-beige: #F1E7DA;
+  --brand-gold: #D4A11C;
+  --brand-brown: #6F4A1E;
+  --brand-green: #4B9A6A;
+}
+body { background: var(--brand-beige); }

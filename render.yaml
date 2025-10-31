@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: pyramidsmart-server
+    env: node
+    region: oregon
+    branch: main
+    root: server
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: SESSION_STORE_PATH
+        value: "./.wwebjs_auth"
+      # Note: DO NOT put MONGODB_URI here with real credentials in repo.
+      # Set MONGODB_URI and other secrets via Render dashboard (Environment tab).
+
+  - type: static
+    name: pyramidsmart-client
+    branch: main
+    root: client
+    buildCommand: npm install && npm run build
+    publishPath: dist
+    plan: free
+    envVars:
+      - key: VITE_API_URL
+        value: "https://pyramidsmart-server.onrender.com"

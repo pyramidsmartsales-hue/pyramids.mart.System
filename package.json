@@ -1,0 +1,14 @@
+{
+  "name": "pyramidsmart",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"cd server && npm run dev\" \"cd client && npm run dev -- --host 0.0.0.0\"",
+    "server": "cd server && npm run dev",
+    "client": "cd client && npm run dev -- --host 0.0.0.0",
+    "install-all": "cd server && npm install && cd ../client && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
