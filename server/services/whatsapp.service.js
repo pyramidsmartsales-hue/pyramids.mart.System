@@ -1,5 +1,6 @@
 // server/services/whatsapp.service.js
 // Safe, compatible whatsapp service with named export `broadcastMessage`
+// and alias `sendBroadcast` for backward compatibility.
 // Keeps initWhatsApp as default export.
 
 import pkg from "whatsapp-web.js";
@@ -17,7 +18,6 @@ let readyFlag = false;
 function normalizeNumber(n) {
   if (!n) return null;
   const s = String(n).replace(/[^\d]/g, "");
-  // simple normalisation — assumes numbers include country code or start with 0
   if (s.length === 0) return null;
   return s;
 }
@@ -27,7 +27,6 @@ export default function initWhatsApp(io) {
   const sessionPath = process.env.SESSION_STORE_PATH || "./.wwebjs_auth";
 
   if (waClient) {
-    // already initialized
     return waClient;
   }
 
@@ -38,9 +37,7 @@ export default function initWhatsApp(io) {
 
   waClient.on("qr", (qr) => {
     try {
-      // emit raw qr text to clients
       if (ioGlobal) ioGlobal.emit("wa:qr", qr);
-      // terminal ascii for logs
       try { qrcodeTerminal.generate(qr, { small: true }); } catch (e) {}
       console.log("QR generated");
     } catch (err) {
@@ -70,7 +67,6 @@ export default function initWhatsApp(io) {
     readyFlag = false;
     console.warn("WhatsApp disconnected:", reason);
     if (ioGlobal) ioGlobal.emit("wa:disconnected", reason);
-    // attempt simple re-init after disconnect (safe retry)
     setTimeout(() => {
       try {
         waClient.destroy().catch(()=>{});
@@ -87,7 +83,6 @@ export default function initWhatsApp(io) {
     if (ioGlobal) ioGlobal.emit("wa:init_error", e && e.message ? e.message : String(e));
   });
 
-  // optional per-socket handler: forward socket requests to send single message
   if (ioGlobal) {
     ioGlobal.on("connection", (socket) => {
       socket.on("request:sendToNumber", async ({ number, message }) => {
@@ -132,7 +127,6 @@ export async function broadcastMessage(messageDoc) {
     if (!normalized) {
       result.error = "invalid_number";
       results.push(result);
-      // update DB if available
       try {
         if (messageDoc && messageDoc._id && MessageModel) {
           await MessageModel.updateOne({ _id: messageDoc._id, "recipients.clientId": clientId }, {
@@ -144,7 +138,6 @@ export async function broadcastMessage(messageDoc) {
     }
 
     try {
-      // Check number id (registered)
       const numberId = await waClient.getNumberId(normalized);
       if (!numberId) {
         result.error = "not_registered";
@@ -159,13 +152,11 @@ export async function broadcastMessage(messageDoc) {
         continue;
       }
 
-      const to = numberId._serialized; // like "2547xxxxx@c.us"
+      const to = numberId._serialized;
 
-      // If mediaUrl is present, fetch and send as media
       if (messageDoc.mediaUrl) {
         try {
           const base = process.env.BASE_URL || "";
-          // mediaUrl might be absolute or relative
           const url = messageDoc.mediaUrl.startsWith("http") ? messageDoc.mediaUrl : `${base}${messageDoc.mediaUrl}`;
           const resp = await axios.get(url, { responseType: "arraybuffer" });
           const mime = resp.headers["content-type"] || "application/octet-stream";
@@ -177,7 +168,6 @@ export async function broadcastMessage(messageDoc) {
           console.warn("Media send error for", normalized, errMedia && errMedia.message ? errMedia.message : errMedia);
           result.error = "media_send_failed";
           results.push(result);
-          // update DB
           try {
             if (messageDoc && messageDoc._id && MessageModel) {
               await MessageModel.updateOne({ _id: messageDoc._id, "recipients.clientId": clientId }, {
@@ -188,15 +178,12 @@ export async function broadcastMessage(messageDoc) {
           continue;
         }
       } else {
-        // send text message
         await waClient.sendMessage(to, messageDoc.body || "");
       }
 
-      // success
       result.ok = true;
       results.push(result);
 
-      // update DB status if available
       try {
         if (messageDoc && messageDoc._id && MessageModel) {
           await MessageModel.updateOne({ _id: messageDoc._id, "recipients.clientId": clientId }, {
@@ -207,7 +194,6 @@ export async function broadcastMessage(messageDoc) {
         console.warn("DB update warning:", e && e.message ? e.message : e);
       }
 
-      // emit progress
       try { if (ioGlobal) ioGlobal.emit("wa:progress", { clientId, phone: normalized, status: "sent" }); } catch(e){}
     } catch (err) {
       console.error("Error sending to", normalized, err && err.stack ? err.stack : err);
@@ -222,9 +208,8 @@ export async function broadcastMessage(messageDoc) {
       } catch (e) {}
       try { if (ioGlobal) ioGlobal.emit("wa:progress", { clientId, phone: normalized, status: "failed", error: result.error }); } catch(e){}
     }
-  } // end for
+  }
 
-  // Optionally: mark overall done
   try {
     if (messageDoc && messageDoc._id && MessageModel) {
       await MessageModel.findByIdAndUpdate(messageDoc._id, { overallStatus: "done" });
@@ -235,7 +220,7 @@ export async function broadcastMessage(messageDoc) {
 }
 
 /**
- * Utility: send a single number from server code
+ * sendToNumberServer helper
  */
 export async function sendToNumberServer(number, message) {
   if (!waClient) return { ok: false, error: "client_not_initialized" };
@@ -253,8 +238,13 @@ export async function sendToNumberServer(number, message) {
 }
 
 /**
- * Export a helper to check readiness
+ * isWhatsAppReady helper
  */
 export function isWhatsAppReady() {
   return !!readyFlag;
 }
+
+// ===== Backward-compatibility aliases =====
+// some modules import `sendBroadcast` or `broadcastMessage`; export both names
+export const sendBroadcast = broadcastMessage;
+export { broadcastMessage as broadcastMessage }; // named export already exists above
