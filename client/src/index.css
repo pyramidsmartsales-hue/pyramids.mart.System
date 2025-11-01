@@ -1,12 +1,24 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /* theme variables */
 :root{
-  --brand-beige: #F1E7DA;
-  --brand-gold: #D4A11C;
-  --brand-brown: #6F4A1E;
-  --brand-green: #4B9A6A;
+  --bg: #F7FAFC; /* light */
+  --card: #FFFFFF;
+  --muted: #6B7280;
+  --primary: #0EA5A4;
+  --accent: #7C3AED;
 }
-body { background: var(--brand-beige); }
+
+html, body, #root { height: 100%; }
+body {
+  font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  background: var(--bg);
+  color: #0f172a;
+}
+
+/* small visual helpers */
+.rounded-xl { border-radius: 12px; }
