@@ -22,6 +22,8 @@ export default function Messages() {
   const [error, setError] = useState(null);
   const [successMsg, setSuccessMsg] = useState(null);
 
+  const [sendResult, setSendResult] = useState(null); // to show from/results
+
   useEffect(() => {
     fetchClients();
     fetchMessages();
@@ -31,10 +33,16 @@ export default function Messages() {
       socket.on("wa:progress", (p) => {
         console.log("wa progress:", p);
       });
+      socket.on("whatsapp:send_result", (payload) => {
+        console.log("socket whatsapp:send_result", payload);
+        // payload may contain { from, results }
+        setSendResult(payload);
+      });
     }
     return () => {
       if (socket && socket.off) {
         socket.off("wa:progress");
+        socket.off("whatsapp:send_result");
       }
     };
     // eslint-disable-next-line
@@ -112,13 +120,30 @@ export default function Messages() {
     }
   }
 
+  // Build normalized phone numbers array from selected ids
+  function buildNumbersFromSelection() {
+    const arr = [];
+    for (const id of Array.from(selected)) {
+      const c = clients.find((x) => (x._id || x.id || x.phone) === id);
+      if (!c) continue;
+      // assume phone stored in c.phone (fallbacks included)
+      let p = c.phone || c.mobile || c.number || "";
+      p = String(p || "").trim();
+      // remove plus sign and any non-digits
+      p = p.replace(/\D/g, "");
+      if (p) arr.push(p);
+    }
+    return arr;
+  }
+
   async function sendBroadcast(e) {
     e.preventDefault();
     setError(null);
     setSuccessMsg(null);
+    setSendResult(null);
 
-    const recipients = Array.from(selected);
-    if (recipients.length === 0) {
+    const numbers = buildNumbersFromSelection();
+    if (numbers.length === 0) {
       setError("يرجى اختيار عميل واحد على الأقل لإرسال الرسالة.");
       return;
     }
@@ -129,19 +154,40 @@ export default function Messages() {
 
     setSending(true);
     try {
-      const form = new FormData();
-      form.append("message", message);
-      form.append("recipients", JSON.stringify(recipients));
-      if (file) form.append("file", file);
+      // If there's a file, use multipart/form-data but include `numbers` as JSON string
+      if (file) {
+        const form = new FormData();
+        form.append("message", message);
+        form.append("numbers", JSON.stringify(numbers)); // IMPORTANT: send numbers field
+        form.append("recipients", JSON.stringify([])); // keep recipients empty to avoid ambiguity
+        form.append("file", file);
 
-      // إرسال multipart/form-data إلى السيرفر
-      const res = await api.post("/api/messages", form, {
-        headers: { "Content-Type": "multipart/form-data" },
-        timeout: 60000,
-      });
+        console.log("Sending multipart payload (Messages page):", { numbers, message, fileName: file.name });
 
-      console.log("broadcast response:", res.data);
-      setSuccessMsg(res.data?.message || "تم الإرسال بنجاح.");
+        const res = await api.post("/api/messages", form, {
+          headers: { "Content-Type": "multipart/form-data" },
+          timeout: 60000,
+        });
+
+        console.log("broadcast response (multipart):", res.data);
+        setSuccessMsg(res.data?.message || "تم الإرسال بنجاح.");
+        // If server returns structured result, capture it
+        if (res.data?.results || res.data?.from) {
+          setSendResult({ from: res.data.from || null, results: res.data.results || null, raw: res.data });
+        }
+      } else {
+        // No file: send JSON body with numbers & message (same as Dashboard)
+        const payload = { numbers, message };
+        console.log("Sending JSON payload (Messages page):", payload);
+
+        const res = await api.post("/api/messages", payload, { timeout: 60000 });
+        console.log("broadcast response (json):", res.data);
+        setSuccessMsg(res.data?.message || "تم الإرسال بنجاح.");
+        if (res.data?.results || res.data?.from) {
+          setSendResult({ from: res.data.from || null, results: res.data.results || null, raw: res.data });
+        }
+      }
+
       setMessage("");
       setFile(null);
       setSelected(new Set());
@@ -149,18 +195,22 @@ export default function Messages() {
 
       // reload messages and clients if needed
       fetchMessages();
-      // أرسل حدث socket اختياري للسيرفر/العملاء
+      // emit a local socket event to notify others (optional)
       try {
         if (socket && socket.emit) {
-          socket.emit("broadcast:sent", { count: recipients.length });
+          socket.emit("broadcast:sent", { count: numbers.length });
         }
       } catch (sErr) {
         console.warn("socket emit failed", sErr);
       }
     } catch (err) {
       console.error("broadcast failed:", err);
-      const msg = err?.response?.data?.message || err?.message || "فشل إرسال البث";
+      const msg = err?.response?.data?.message || err?.response?.data || err?.message || "فشل إرسال البث";
       setError(String(msg));
+      // if server returned structured error with details, show them
+      if (err?.response?.data?.results || err?.response?.data?.from) {
+        setSendResult({ from: err.response.data.from || null, results: err.response.data.results || null, raw: err.response.data });
+      }
     } finally {
       setSending(false);
     }
@@ -275,6 +325,27 @@ export default function Messages() {
           API Base: <span className="font-mono">{API_BASE}</span>
         </div>
       </form>
+
+      {/* Show send_result if available */}
+      {sendResult && (
+        <div className="mt-4 p-3 bg-gray-50 rounded border">
+          <h4 className="font-medium mb-2">Send result</h4>
+          {sendResult.from && <div className="text-sm mb-1">From: <strong>{sendResult.from}</strong></div>}
+          {sendResult.results ? (
+            <div className="text-xs">
+              {sendResult.results.map((r, idx) => (
+                <div key={idx} className="mb-1">
+                  <div><strong>to:</strong> {r.to}</div>
+                  <div><strong>ok:</strong> {String(r.ok)}</div>
+                  {r.ok ? <div><strong>id:</strong> {r.id}</div> : <div style={{ color: "red" }}><strong>error:</strong> {r.error || JSON.stringify(r)}</div>}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{JSON.stringify(sendResult.raw || sendResult, null, 2)}</pre>
+          )}
+        </div>
+      )}
 
       <div className="mt-6">
         <h3 className="text-lg font-medium mb-2">Broadcast history</h3>
