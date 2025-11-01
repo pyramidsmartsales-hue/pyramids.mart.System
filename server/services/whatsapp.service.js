@@ -244,7 +244,6 @@ export function isWhatsAppReady() {
   return !!readyFlag;
 }
 
-// ===== Backward-compatibility aliases =====
-// some modules import `sendBroadcast` or `broadcastMessage`; export both names
+// ===== Backward-compatibility alias =====
+// some modules import `sendBroadcast`; export alias only (no duplicate)
 export const sendBroadcast = broadcastMessage;
-export { broadcastMessage as broadcastMessage }; // named export already exists above
