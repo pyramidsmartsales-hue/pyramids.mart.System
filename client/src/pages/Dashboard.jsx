@@ -55,7 +55,6 @@ export default function Dashboard() {
 
     // socket event handlers
     socket.on("connect", () => {
-      // console.log("socket connected", socket.id);
       // request immediate status (optional)
       socket.emit("whatsapp:status", (res) => {
         if (res && typeof res.connected !== "undefined") setWaConnected(!!res.connected);
@@ -69,8 +68,6 @@ export default function Dashboard() {
 
     // when server emits QR text, request PNG from server and show modal
     socket.on("whatsapp:qr", (payload) => {
-      // payload.qr exists but we prefer to fetch server PNG (qr.png) which we added on backend
-      // cache-bust using timestamp
       const src = `${base || ""}/api/messages/qr.png?ts=${Date.now()}`;
       setQrSrc(src);
       setQrVisible(true);
@@ -139,7 +136,7 @@ export default function Dashboard() {
       const parsed = JSON.parse(text);
       if (Array.isArray(parsed)) return parsed.map(String);
     } catch (e) { /* not JSON */ }
-    // split by comma, newline, or space
+    // split by comma, newline, or semicolon
     const parts = text.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
     return parts;
   };
@@ -169,9 +166,6 @@ export default function Dashboard() {
       setSendResult(res.data);
       if (res.data && res.data.ok) {
         alert("تم إرسال الرسالة (راجع نتائج الإرسال في الأسفل).");
-        // optionally clear inputs
-        // setMessageText("");
-        // setNumbersText("");
       } else {
         alert("الاستجابة من الخادم: " + (res.data?.error || JSON.stringify(res.data)));
       }
@@ -245,7 +239,7 @@ export default function Dashboard() {
             <label className="block text-sm font-medium text-gray-700">Numbers</label>
             <textarea
               rows={2}
-              placeholder="2547XXXXXXXX,2547YYYYYYYY أو JSON array مثل: [\"2547..\",\"2547..\"]"
+              placeholder={`2547XXXXXXXX,2547YYYYYYYY أو JSON array مثل: ["2547..","2547.."]`}
               value={numbersText}
               onChange={(e) => setNumbersText(e.target.value)}
               className="mt-1 block w-full border rounded p-2"
