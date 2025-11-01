@@ -2,121 +2,81 @@
 import express from "express";
 import multer from "multer";
 import path from "path";
-import { sendBroadcast } from "../services/whatsapp.service.js";
+import { broadcastMessage, sendBroadcast, getLastQr, isWhatsAppReady } from "../services/whatsapp.service.js";
 
 const router = express.Router();
 const upload = multer({ dest: path.join(process.cwd(), "uploads/") });
 
-/**
- * Helper to normalize incoming payload into the internal messageDoc shape
- * expected by the whatsapp service (which uses `recipients` array and optionally
- * `mediaUrl`).
- *
- * Accepted client shapes:
- * - { numbers: ["2547..."], message: "text" }
- * - { recipients: [{ phone: "2547..." }], body: "text" }
- * - multipart form with file in `file` (req.file) and numbers as JSON string or CSV
- */
-function buildMessageDocFromRequest(req) {
-  // message text can be in `message` or `body`
-  const text = req.body.message || req.body.body || "";
-
-  // parse numbers/numbers string/recipients
-  let numbers = req.body.numbers ?? req.body.numbersList ?? req.body.recipients ?? [];
-  let recipients = [];
-
-  // if recipients provided directly as array of objects
-  if (Array.isArray(numbers) && numbers.length > 0 && typeof numbers[0] === "object") {
-    // assume already in form [{ phone, clientId? }]
-    recipients = numbers.map((r) => ({ phone: r.phone || r.number || r.to || r }));
-  } else {
-    // if numbers is a string, attempt to parse JSON, otherwise split CSV
-    if (typeof numbers === "string") {
-      try {
-        const parsed = JSON.parse(numbers);
-        if (Array.isArray(parsed)) {
-          numbers = parsed;
-        } else {
-          // not an array -> fallback to CSV
-          numbers = numbers.split(",").map((s) => s.trim()).filter(Boolean);
-        }
-      } catch (e) {
-        // not JSON -> maybe CSV
-        numbers = numbers.split(",").map((s) => s.trim()).filter(Boolean);
-      }
+function parseRecipients(req) {
+  let numbers = req.body.numbers || req.body.recipients || req.body.numbersList || [];
+  if (typeof numbers === "string") {
+    try {
+      const parsed = JSON.parse(numbers);
+      numbers = parsed;
+    } catch (e) {
+      // maybe comma-separated
+      numbers = numbers.split(",").map(s => s.trim()).filter(Boolean);
     }
-
-    if (!Array.isArray(numbers)) numbers = [];
-
-    recipients = numbers.map((n) => ({ phone: n }));
   }
-
-  const messageDoc = {
-    body: text,
-    recipients
-  };
-
-  // handle uploaded file by exposing it via the static /uploads route
-  // the server serves /uploads -> <project>/uploads
-  if (req.file) {
-    const base = process.env.BASE_URL || "";
-    const fileUrl = `${base}/uploads/${path.basename(req.file.path)}`;
-    // The whatsapp service expects `mediaUrl` property (it will fetch it via axios)
-    messageDoc.mediaUrl = fileUrl;
-  }
-
-  return messageDoc;
+  if (!Array.isArray(numbers)) numbers = [];
+  return numbers.map(n => {
+    if (typeof n === "object") return { phone: n.phone || n.number || n.to };
+    return { phone: String(n) };
+  });
 }
 
-// POST /api/messages/broadcast
-// kept for explicit broadcast route
-router.post("/broadcast", upload.single("file"), async (req, res) => {
+// POST /api/messages  (public frontend calls this)
+router.post("/", upload.single("file"), async (req, res) => {
   try {
-    const messageDoc = buildMessageDocFromRequest(req);
-
-    if (!messageDoc.body && !messageDoc.mediaUrl) {
-      return res.status(400).json({ error: "No message or file provided" });
+    const body = req.body.message || req.body.body || "";
+    const recipients = parseRecipients(req);
+    let mediaUrl = null;
+    if (req.file) {
+      // serve via /uploads static route
+      const base = process.env.BASE_URL || "";
+      mediaUrl = `${base}/uploads/${path.basename(req.file.path)}`;
     }
 
-    console.info("Broadcast request (broadcast):", { count: (messageDoc.recipients || []).length, file: !!req.file });
+    // block if WA not connected
+    if (!isWhatsAppReady()) {
+      return res.status(503).json({ ok: false, error: "WhatsApp not connected" });
+    }
 
-    const results = await sendBroadcast({
-      recipients: messageDoc.recipients,
-      body: messageDoc.body,
-      mediaUrl: messageDoc.mediaUrl,
-      // preserve original fields for backward compatibility
-    });
-
-    res.json({ ok: true, results });
+    const result = await broadcastMessage({ recipients, body, mediaUrl });
+    if (!result || result.ok === false) {
+      return res.status(500).json(result);
+    }
+    return res.json(result);
   } catch (err) {
-    console.error("Error in /api/messages/broadcast:", err && err.stack ? err.stack : err);
-    res.status(500).json({ error: err && err.message ? err.message : "Internal server error" });
+    console.error("POST /api/messages error:", err && err.stack ? err.stack : err);
+    return res.status(500).json({ ok: false, error: err && err.message ? err.message : String(err) });
   }
 });
 
-// POST /api/messages
-// BACKWARD-COMPATIBILITY: some clients call POST /api/messages (no /broadcast)
-// This route normalizes input and delegates to the same sendBroadcast implementation.
-router.post("/", upload.single("file"), async (req, res) => {
+// legacy route: /api/messages/broadcast (keep for compat)
+router.post("/broadcast", upload.single("file"), async (req, res) => {
+  // simply delegate to root handler
+  return router.handle(req, res);
+});
+
+// GET /api/whatsapp/status -> { connected: boolean }
+router.get("/status", (req, res) => {
   try {
-    const messageDoc = buildMessageDocFromRequest(req);
+    const connected = isWhatsAppReady();
+    res.json({ connected });
+  } catch (e) {
+    res.status(500).json({ connected: false, error: e && e.message ? e.message : String(e) });
+  }
+});
 
-    if (!messageDoc.body && !messageDoc.mediaUrl) {
-      return res.status(400).json({ error: "No message or file provided" });
-    }
-
-    console.info("Broadcast request (root):", { count: (messageDoc.recipients || []).length, file: !!req.file });
-
-    const results = await sendBroadcast({
-      recipients: messageDoc.recipients,
-      body: messageDoc.body,
-      mediaUrl: messageDoc.mediaUrl,
-    });
-
-    res.json({ ok: true, results });
-  } catch (err) {
-    console.error("Error in /api/messages:", err && err.stack ? err.stack : err);
-    res.status(500).json({ error: err && err.message ? err.message : "Internal server error" });
+// GET /api/whatsapp/qr -> { qr: string|null, connected: boolean }
+router.get("/qr", (req, res) => {
+  try {
+    const qr = getLastQr();
+    const connected = isWhatsAppReady();
+    res.json({ qr: qr || null, connected });
+  } catch (e) {
+    res.status(500).json({ qr: null, connected: false, error: e && e.message ? e.message : String(e) });
   }
 });
 

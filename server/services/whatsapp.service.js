@@ -1,249 +1,181 @@
 // server/services/whatsapp.service.js
-// Safe, compatible whatsapp service with named export `broadcastMessage`
-// and alias `sendBroadcast` for backward compatibility.
-// Keeps initWhatsApp as default export.
-
 import pkg from "whatsapp-web.js";
 const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcodeTerminal from "qrcode-terminal";
 import fs from "fs";
 import path from "path";
 import axios from "axios";
-import MessageModel from "../models/Message.model.js"; // used to update statuses if present
+import MessageModel from "../models/Message.model.js"; // optional, keep if exists
 
 let waClient = null;
 let ioGlobal = null;
 let readyFlag = false;
+let lastQr = null;
 
-function normalizeNumber(n) {
-  if (!n) return null;
-  const s = String(n).replace(/[^\d]/g, "");
-  if (s.length === 0) return null;
-  return s;
-}
-
+/**
+ * initialize WhatsApp client and wire socket.io events
+ * @param {import('socket.io').Server} io
+ */
 export default function initWhatsApp(io) {
   ioGlobal = io;
-  const sessionPath = process.env.SESSION_STORE_PATH || "./.wwebjs_auth";
 
-  if (waClient) {
-    return waClient;
-  }
+  // only init once
+  if (waClient) return waClient;
 
-  waClient = new Client({
-    authStrategy: new LocalAuth({ clientId: "pyramids", dataPath: sessionPath }),
-    puppeteer: { headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] },
-  });
-
-  waClient.on("qr", (qr) => {
-    try {
-      if (ioGlobal) ioGlobal.emit("wa:qr", qr);
-      try { qrcodeTerminal.generate(qr, { small: true }); } catch (e) {}
-      console.log("QR generated");
-    } catch (err) {
-      console.warn("Error in qr handler:", err);
+  const client = new Client({
+    authStrategy: new LocalAuth({
+      clientId: "pyramidsmart" // optional custom id
+    }),
+    puppeteer: {
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
     }
   });
 
-  waClient.on("ready", () => {
-    readyFlag = true;
-    console.log("WhatsApp ready");
-    if (ioGlobal) ioGlobal.emit("wa:ready", true);
-  });
+  // store reference
+  waClient = client;
 
-  waClient.on("authenticated", () => {
-    readyFlag = true;
-    console.log("WhatsApp authenticated");
-    if (ioGlobal) ioGlobal.emit("wa:authenticated", true);
-  });
-
-  waClient.on("auth_failure", (msg) => {
+  client.on("qr", (qr) => {
+    lastQr = qr;
     readyFlag = false;
-    console.warn("WhatsApp auth_failure:", msg);
-    if (ioGlobal) ioGlobal.emit("wa:auth_failure", msg);
+    console.info("WhatsApp QR generated");
+    // emit via socket.io so frontend can show QR immediately
+    if (ioGlobal) ioGlobal.emit("whatsapp:qr", { qr });
+    // also print to terminal for debug
+    try { qrcodeTerminal.generate(qr, { small: true }); } catch (e) {}
   });
 
-  waClient.on("disconnected", (reason) => {
+  client.on("ready", () => {
+    readyFlag = true;
+    console.info("WhatsApp ready");
+    if (ioGlobal) ioGlobal.emit("whatsapp:ready", { connected: true });
+    lastQr = null;
+  });
+
+  client.on("authenticated", (session) => {
+    console.info("WhatsApp authenticated");
+    if (ioGlobal) ioGlobal.emit("whatsapp:authenticated", { ok: true });
+  });
+
+  client.on("auth_failure", (msg) => {
+    readyFlag = false;
+    console.warn("WhatsApp auth failed:", msg);
+    if (ioGlobal) ioGlobal.emit("whatsapp:auth_failure", { msg });
+  });
+
+  client.on("disconnected", (reason) => {
     readyFlag = false;
     console.warn("WhatsApp disconnected:", reason);
-    if (ioGlobal) ioGlobal.emit("wa:disconnected", reason);
+    if (ioGlobal) ioGlobal.emit("whatsapp:disconnected", { reason, connected: false });
+    // try to destroy and re-init after a small delay to recover
+    try {
+      client.destroy();
+    } catch (e) {}
+    waClient = null;
+    // optionally re-init after delay (be careful in production)
     setTimeout(() => {
       try {
-        waClient.destroy().catch(()=>{});
-        waClient.initialize().catch((e) => console.error("re-init error:", e));
+        initWhatsApp(ioGlobal);
       } catch (e) {
-        console.warn("re-init attempt failed:", e);
+        console.error("re-init whatsapp failed:", e && e.message ? e.message : e);
       }
     }, 3000);
   });
 
-  waClient.initialize().catch((e) => {
-    readyFlag = false;
-    console.error("waClient initialize error:", e && e.stack ? e.stack : e);
-    if (ioGlobal) ioGlobal.emit("wa:init_error", e && e.message ? e.message : String(e));
+  client.on("message_create", (msg) => {
+    // optional: update DB or emit events on new messages
+    if (ioGlobal) ioGlobal.emit("whatsapp:message", { from: msg.from, body: msg.body });
   });
 
-  if (ioGlobal) {
-    ioGlobal.on("connection", (socket) => {
-      socket.on("request:sendToNumber", async ({ number, message }) => {
-        try {
-          if (!readyFlag) return socket.emit("response:sendToNumber", { ok: false, error: "client_not_ready" });
-          const normalized = normalizeNumber(number);
-          const id = await waClient.getNumberId(normalized);
-          if (!id) return socket.emit("response:sendToNumber", { ok: false, error: "not_registered" });
-          const sent = await waClient.sendMessage(id._serialized, message);
-          socket.emit("response:sendToNumber", { ok: true, id: sent.id?._serialized || null });
-        } catch (err) {
-          console.warn("socket send error:", err && err.message ? err.message : err);
-          socket.emit("response:sendToNumber", { ok: false, error: err && err.message ? err.message : String(err) });
-        }
-      });
-    });
-  }
+  client.initialize().catch((err) => {
+    readyFlag = false;
+    console.error("WhatsApp client failed to initialize:", err && err.message ? err.message : err);
+  });
 
-  return waClient;
+  return client;
 }
 
 /**
- * broadcastMessage
- * Accepts message object:
- * { body: string, recipients: [{ clientId?, phone }], mediaUrl? }
- * Returns array of results { clientId?, phone, ok, error? }
+ * Send/broadcast message.
+ * -- IMPORTANT: returns error if WhatsApp client is not ready/connected.
+ *
+ * @param {Object} opts
+ * @param {Array<{phone:string}>} opts.recipients
+ * @param {string} opts.body
+ * @param {string} opts.mediaUrl optional
  */
-export async function broadcastMessage(messageDoc) {
-  if (!waClient) {
-    throw new Error("WhatsApp client not initialized");
+export async function broadcastMessage({ recipients = [], body = "", mediaUrl = null } = {}) {
+  if (!readyFlag || !waClient) {
+    const err = new Error("WhatsApp not connected");
+    console.warn("broadcastMessage blocked: whatsapp not connected");
+    return { ok: false, error: err.message };
   }
 
-  const recipients = (messageDoc && Array.isArray(messageDoc.recipients)) ? messageDoc.recipients : [];
   const results = [];
-
-  for (const r of recipients) {
-    const phoneRaw = r.phone || r.number || r.to || "";
-    const clientId = r.clientId || null;
-    const normalized = normalizeNumber(phoneRaw);
-    const result = { clientId, phone: phoneRaw, ok: false };
-
-    if (!normalized) {
-      result.error = "invalid_number";
-      results.push(result);
-      try {
-        if (messageDoc && messageDoc._id && MessageModel) {
-          await MessageModel.updateOne({ _id: messageDoc._id, "recipients.clientId": clientId }, {
-            $set: { "recipients.$.status": "failed", "recipients.$.error": "invalid_number" }
-          });
-        }
-      } catch (e) {}
-      continue;
-    }
-
-    try {
-      const numberId = await waClient.getNumberId(normalized);
-      if (!numberId) {
-        result.error = "not_registered";
-        results.push(result);
-        try {
-          if (messageDoc && messageDoc._id && MessageModel) {
-            await MessageModel.updateOne({ _id: messageDoc._id, "recipients.clientId": clientId }, {
-              $set: { "recipients.$.status": "failed", "recipients.$.error": "not_registered" }
-            });
-          }
-        } catch (e) {}
+  try {
+    for (const r of recipients) {
+      const to = String((r && (r.phone || r.to || r.number)) || r).replace(/\D/g, "");
+      if (!to) {
+        results.push({ to: r, ok: false, error: "invalid number" });
         continue;
       }
-
-      const to = numberId._serialized;
-
-      if (messageDoc.mediaUrl) {
+      const jid = `${to}@c.us`;
+      if (mediaUrl) {
+        // try to fetch media
         try {
-          const base = process.env.BASE_URL || "";
-          const url = messageDoc.mediaUrl.startsWith("http") ? messageDoc.mediaUrl : `${base}${messageDoc.mediaUrl}`;
-          const resp = await axios.get(url, { responseType: "arraybuffer" });
-          const mime = resp.headers["content-type"] || "application/octet-stream";
-          const data = Buffer.from(resp.data, "binary").toString("base64");
-          const fileName = path.basename(url.split("?")[0]) || "file";
-          const media = new MessageMedia(mime, data, fileName);
-          await waClient.sendMessage(to, media, { caption: messageDoc.body || "" });
-        } catch (errMedia) {
-          console.warn("Media send error for", normalized, errMedia && errMedia.message ? errMedia.message : errMedia);
-          result.error = "media_send_failed";
-          results.push(result);
-          try {
-            if (messageDoc && messageDoc._id && MessageModel) {
-              await MessageModel.updateOne({ _id: messageDoc._id, "recipients.clientId": clientId }, {
-                $set: { "recipients.$.status": "failed", "recipients.$.error": "media_send_failed" }
-              });
-            }
-          } catch (e) {}
-          continue;
+          const resp = await axios.get(mediaUrl, { responseType: "arraybuffer" });
+          const contentType = resp.headers["content-type"] || "application/octet-stream";
+          const extension = contentType.split("/")[1] || "bin";
+          const tmpName = `wa-media-${Date.now()}.${extension}`;
+          const tmpPath = path.join(process.cwd(), "uploads", tmpName);
+          fs.writeFileSync(tmpPath, resp.data);
+          const media = MessageMedia.fromFilePath(tmpPath);
+          const msg = await waClient.sendMessage(jid, media, { caption: body || undefined });
+          results.push({ to: jid, ok: true, id: msg.id._serialized });
+          try { fs.unlinkSync(tmpPath); } catch(e) {}
+        } catch (err) {
+          results.push({ to: jid, ok: false, error: err && err.message ? err.message : String(err) });
         }
       } else {
-        await waClient.sendMessage(to, messageDoc.body || "");
-      }
-
-      result.ok = true;
-      results.push(result);
-
-      try {
-        if (messageDoc && messageDoc._id && MessageModel) {
-          await MessageModel.updateOne({ _id: messageDoc._id, "recipients.clientId": clientId }, {
-            $set: { "recipients.$.status": "sent", "recipients.$.sentAt": new Date() }
-          });
+        try {
+          const msg = await waClient.sendMessage(jid, body || "");
+          results.push({ to: jid, ok: true, id: msg.id ? msg.id._serialized : null });
+        } catch (err) {
+          results.push({ to: jid, ok: false, error: err && err.message ? err.message : String(err) });
         }
-      } catch (e) {
-        console.warn("DB update warning:", e && e.message ? e.message : e);
       }
-
-      try { if (ioGlobal) ioGlobal.emit("wa:progress", { clientId, phone: normalized, status: "sent" }); } catch(e){}
-    } catch (err) {
-      console.error("Error sending to", normalized, err && err.stack ? err.stack : err);
-      result.error = err && err.message ? err.message : String(err);
-      results.push(result);
-      try {
-        if (messageDoc && messageDoc._id && MessageModel) {
-          await MessageModel.updateOne({ _id: messageDoc._id, "recipients.clientId": clientId }, {
-            $set: { "recipients.$.status": "failed", "recipients.$.error": result.error }
-          });
-        }
-      } catch (e) {}
-      try { if (ioGlobal) ioGlobal.emit("wa:progress", { clientId, phone: normalized, status: "failed", error: result.error }); } catch(e){}
     }
-  }
 
-  try {
-    if (messageDoc && messageDoc._id && MessageModel) {
-      await MessageModel.findByIdAndUpdate(messageDoc._id, { overallStatus: "done" });
-    }
-  } catch (e) {}
+    // optionally persist to MessageModel if exists
+    try {
+      if (typeof MessageModel === "function" || typeof MessageModel.create === "function") {
+        // not required; wrapped to avoid crash if model missing
+        // MessageModel.create({ recipients, body, results, sentAt: new Date() });
+      }
+    } catch (e) {}
 
-  return results;
-}
-
-/**
- * sendToNumberServer helper
- */
-export async function sendToNumberServer(number, message) {
-  if (!waClient) return { ok: false, error: "client_not_initialized" };
-  if (!readyFlag) return { ok: false, error: "client_not_ready" };
-  const normalized = normalizeNumber(number);
-  if (!normalized) return { ok: false, error: "invalid_number" };
-  try {
-    const numberId = await waClient.getNumberId(normalized);
-    if (!numberId) return { ok: false, error: "not_registered" };
-    const sent = await waClient.sendMessage(numberId._serialized, message);
-    return { ok: true, id: sent.id?._serialized || null };
+    return { ok: true, results };
   } catch (err) {
+    console.error("broadcastMessage error:", err && err.stack ? err.stack : err);
     return { ok: false, error: err && err.message ? err.message : String(err) };
   }
 }
 
 /**
- * isWhatsAppReady helper
+ * alias for older imports
+ */
+export const sendBroadcast = broadcastMessage;
+
+/**
+ * helper: is connected
  */
 export function isWhatsAppReady() {
   return !!readyFlag;
 }
 
-// ===== Backward-compatibility alias =====
-// some modules import `sendBroadcast`; export alias only (no duplicate)
-export const sendBroadcast = broadcastMessage;
+/**
+ * Return last QR or null
+ */
+export function getLastQr() {
+  return lastQr;
+}

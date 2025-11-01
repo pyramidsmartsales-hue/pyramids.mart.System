@@ -1,9 +1,11 @@
+// server.js
 import express from "express";
 import http from "http";
 import { Server as IOServer } from "socket.io";
 import cors from "cors";
 import dotenv from "dotenv";
 import path from "path";
+import fs from "fs";
 
 import connectDB from "./config/db.js";
 import clientsRouter from "./routes/clients.js";
@@ -28,7 +30,7 @@ let allowedOrigins = [];
 
 // normalize allowed origins from env
 if (rawClient && rawClient.trim() !== "") {
-  allowedOrigins = rawClient.split(",").map(s => s.trim()).filter(Boolean);
+  allowedOrigins = rawClient.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 // If no explicit client URL provided, fall back to "*"
@@ -63,14 +65,22 @@ app.options("*", cors({ origin: originCallback, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ensure uploads directory exists (so media serving & temp file writes don't fail)
+const uploadsDir = path.join(process.cwd(), "uploads");
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    console.info("Created uploads directory:", uploadsDir);
+  }
+} catch (e) {
+  console.warn("Could not ensure uploads directory:", e && e.message ? e.message : e);
+}
+
 // static uploads
-// Use process.cwd() so when Render sets root to `server`, path is correct
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+app.use("/uploads", express.static(uploadsDir));
 
-// db
-connectDB();
-
-// routes
+// db connection will be awaited before starting server
+// attach routers (these will be active once the server is listening)
 app.use("/api/clients", clientsRouter);
 app.use("/api/messages", messagesRouter);
 app.use("/api/templates", templatesRouter);
@@ -95,15 +105,73 @@ const io = new IOServer(server, {
   }
 });
 
-initWhatsApp(io);
-socketHandlers(io);
+// start function - connects DB, initializes whatsapp + socket handlers, then listens
+async function start() {
+  try {
+    await connectDB();
+    console.log("Database connected");
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server listening on ${PORT}`);
-  if (useWildcard) {
-    console.log("CORS policy: wildcard '*' (allowing all origins) — consider setting CLIENT_URL in production.");
-  } else {
-    console.log("CORS allowed origins:", allowedOrigins.join(", "));
+    // initialize whatsapp client and pass io so it can emit events
+    try {
+      await initWhatsApp(io);
+      console.log("WhatsApp service initialized (initWhatsApp called)");
+    } catch (e) {
+      console.error("initWhatsApp() failed to initialize:", e && e.message ? e.message : e);
+      // continue — initWhatsApp may retry internally
+    }
+
+    // initialize socket handlers (register connection listeners)
+    try {
+      if (typeof socketHandlers === "function") {
+        socketHandlers(io);
+        console.log("Socket handlers mounted");
+      } else {
+        console.warn("socketHandlers is not a function; skipping socket handler mounting");
+      }
+    } catch (e) {
+      console.warn("Failed to attach socketHandlers:", e && e.message ? e.message : e);
+    }
+
+    const PORT = process.env.PORT || 3000;
+    server.listen(PORT, () => {
+      console.log(`Server listening on ${PORT}`);
+      if (useWildcard) {
+        console.log("CORS policy: wildcard '*' (allowing all origins) — consider setting CLIENT_URL in production.");
+      } else {
+        console.log("CORS allowed origins:", allowedOrigins.join(", "));
+      }
+    });
+  } catch (err) {
+    console.error("Failed to start server:", err && err.message ? err.message : err);
+    process.exit(1);
   }
+}
+
+// global error handlers (best-effort logging)
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled Rejection at:", reason && reason.stack ? reason.stack : reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception thrown:", err && err.stack ? err.stack : err);
+  // optionally exit depending on your needs:
+  // process.exit(1);
+});
+
+// actually start
+start();
+
+// graceful shutdown
+process.on("SIGINT", () => {
+  console.info("SIGINT received - closing server");
+  server.close(() => {
+    console.info("HTTP server closed");
+    process.exit(0);
+  });
+});
+process.on("SIGTERM", () => {
+  console.info("SIGTERM received - closing server");
+  server.close(() => {
+    console.info("HTTP server closed");
+    process.exit(0);
+  });
 });
