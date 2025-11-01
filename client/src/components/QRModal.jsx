@@ -1,22 +1,22 @@
-// client/src/components/QRModal.jsx
+// QRModal.jsx
 import React from "react";
 
 export default function QRModal({ qr, onClose }) {
   if (!qr) return null;
 
-  // إذا كانت القيمة بالفعل data URL (صورة)، استخدمها مباشرة.
-  // وإلا نستخدم Google Chart API لإنشاء صورة QR من النص.
   const isDataUrl = typeof qr === "string" && qr.startsWith("data:");
-  const chartUrl = (typeof qr === "string" && !isDataUrl)
-    ? `https://chart.googleapis.com/chart?cht=qr&chs=360x360&chl=${encodeURIComponent(qr)}&choe=UTF-8`
+  const rawText = String(qr);
+
+  // استخدم api.qrserver.com لإنشاء صورة QR إذا لم تكن data URL
+  const qrServerUrl = !isDataUrl
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=360x360&data=${encodeURIComponent(rawText)}`
     : null;
 
-  const imageSrc = isDataUrl ? qr : chartUrl;
+  const imageSrc = isDataUrl ? rawText : qrServerUrl;
 
-  // نسخ النص الخام إلى الحافظة
   const onCopy = async () => {
     try {
-      await navigator.clipboard.writeText(qr);
+      await navigator.clipboard.writeText(rawText);
       alert("QR data copied to clipboard");
     } catch (e) {
       console.warn("copy failed", e);
@@ -24,21 +24,17 @@ export default function QRModal({ qr, onClose }) {
     }
   };
 
-  // تنزيل الصورة (إذا كانت data URL نحفظها مباشرة، وإلا نفتح رابط google chart)
   const onDownload = async () => {
     try {
-      if (isDataUrl) {
-        const a = document.createElement("a");
-        a.href = qr;
-        a.download = "whatsapp-qr.png";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+      if (!imageSrc) {
+        alert("No image available to download");
         return;
       }
 
-      // محاولة تحميل الصورة من google chart وخلق blob (ممكن يعمل بدون CORS مشاكل عادة)
+      // نحاول جلب الصورة من الخادم كـ blob ثم تنزيلها
       const res = await fetch(imageSrc);
+      if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -50,36 +46,49 @@ export default function QRModal({ qr, onClose }) {
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error("download failed", err);
-      // كحل احتياطي افتح الصورة في تبويب جديد ليتمكن المستخدم من حفظها يدويا
-      window.open(imageSrc, "_blank");
+      // كخطة بديلة: افتح الصورة في تبويب جديد حتى يتمكن المستخدم من حفظها يدويا
+      try {
+        window.open(imageSrc, "_blank");
+      } catch (e) {
+        alert("Cannot download or open image. See console for details.");
+      }
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="bg-white rounded-2xl p-6 w-[440px] max-w-[95%] shadow-xl">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-semibold">Scan QR with WhatsApp</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">Close</button>
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      backgroundColor: "rgba(0,0,0,0.5)"
+    }}>
+      <div style={{
+        background: "#fff", borderRadius: 12, padding: 20,
+        width: 460, maxWidth: "96%", boxShadow: "0 10px 30px rgba(0,0,0,0.2)"
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h3 style={{ margin: 0 }}>Scan QR with WhatsApp</h3>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer" }}>Close</button>
         </div>
 
-        <div className="flex flex-col items-center gap-4">
-          <div className="bg-gray-100 p-3 rounded">
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+          <div style={{ background: "#f7f7f7", padding: 12, borderRadius: 8 }}>
             {imageSrc ? (
-              // نعرض الصورة المولّدة (من google chart أو data URL)
-              <img src={imageSrc} alt="whatsapp qr" className="w-64 h-64 object-contain" />
+              <img src={imageSrc} alt="whatsapp qr" style={{ width: 320, height: 320, objectFit: "contain", display: "block" }} />
             ) : (
-              // لو لم يتوفر مصدر صورة نعرض النص الخام داخل <pre>
-              <pre style={{ width: 256, height: 256, overflow: "auto", padding: 12, background: "#fff" }}>
-                {String(qr)}
-              </pre>
+              <pre style={{ width: 320, height: 320, overflow: "auto", padding: 12, background: "#fff" }}>{rawText}</pre>
             )}
           </div>
 
-          <div className="flex gap-2">
-            <button onClick={onCopy} className="px-4 py-2 rounded bg-teal-600 text-white">Copy data</button>
-            <button onClick={onDownload} className="px-4 py-2 rounded border">Download</button>
-            <button onClick={onClose} className="px-4 py-2 rounded bg-gray-100">Done</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onCopy} style={{ padding: "8px 14px", background: "#059669", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
+              Copy data
+            </button>
+            <button onClick={onDownload} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid #ddd", cursor: "pointer" }}>
+              Download
+            </button>
+            <button onClick={onClose} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#f3f4f6", cursor: "pointer" }}>
+              Done
+            </button>
           </div>
         </div>
       </div>
