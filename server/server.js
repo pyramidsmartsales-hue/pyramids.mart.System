@@ -12,7 +12,8 @@ import clientsRouter from "./routes/clients.js";
 import messagesRouter from "./routes/messages.js";
 import templatesRouter from "./routes/templates.js";
 import analyticsRouter from "./routes/analytics.js";
-import overviewRouter from "./routes/overview.js"; // <-- NEW
+import overviewRouter from "./routes/overview.js"; // <-- existing
+import productsRouter from "./routes/products.js"; // <-- NEW
 import initWhatsApp from "./services/whatsapp.service.js";
 import socketHandlers from "./socket/index.js";
 
@@ -86,7 +87,8 @@ app.use("/api/clients", clientsRouter);
 app.use("/api/messages", messagesRouter);
 app.use("/api/templates", templatesRouter);
 app.use("/api/analytics", analyticsRouter);
-app.use("/api/overview", overviewRouter); // <-- NEW: overview endpoint
+app.use("/api/overview", overviewRouter); // <-- existing: overview endpoint
+app.use("/api/products", productsRouter); // <-- NEW: products endpoint
 
 app.get("/", (req, res) => res.send("OK — Pyramids Mart Service API"));
 
@@ -136,7 +138,7 @@ async function start() {
 
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, () => {
-      console.log(`Server listening on ${PORT}`);
+      console.log(`Server listening on PORT ${PORT}`);
       if (useWildcard) {
         console.log("CORS policy: wildcard '*' (allowing all origins) — consider setting CLIENT_URL in production.");
       } else {

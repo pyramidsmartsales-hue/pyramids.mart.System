@@ -9,7 +9,8 @@ import Messages from "./pages/Messages";
 import Templates from "./pages/Templates";
 import Analytics from "./pages/Analytics";
 import QRModal from "./components/QRModal";
-import Overview from "./pages/Overview"; // <-- NEW: Overview page
+import Overview from "./pages/Overview"; // <-- Overview already present
+import Products from "./pages/Products"; // <-- NEW: Products page
 
 /**
  * Named export SocketContext is required by some pages (Messages.jsx etc).
@@ -59,16 +60,4 @@ export default function App() {
           />
           <main className="p-6">
             {route === "dashboard" && <Dashboard />}
-            {route === "overview" && <Overview />}           {/* <-- NEW */}
-            {route === "clients" && <Clients />}
-            {route === "messages" && <Messages />}
-            {route === "templates" && <Templates />}
-            {route === "analytics" && <Analytics />}
-          </main>
-        </div>
-
-        <QRModal qr={qr} onClose={() => setQr(null)} />
-      </div>
-    </SocketContext.Provider>
-  );
-}
+            {route === "overview" && <Overview />}
