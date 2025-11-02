@@ -1,7 +1,8 @@
 // server/services/whatsappWeb.js
 import express from "express";
 import qrcode from "qrcode";
-import { Client, LocalAuth, MessageMedia } from "whatsapp-web.js";
+import pkg from "whatsapp-web.js";
+const { Client, LocalAuth, MessageMedia } = pkg;
 
 let client = null;
 let lastQr = null;
@@ -43,13 +44,18 @@ export function initWhatsApp(io = null) {
 
   client.initialize();
 
-  // Express endpoints
+  // --- Express endpoints ---
+
+  // WhatsApp connection status
   router.get("/status", (req, res) => res.json({ ok: true, connected: ready }));
+
+  // Retrieve QR for manual scan
   router.get("/qr", async (req, res) => {
     const qrDataUrl = lastQr ? await qrcode.toDataURL(lastQr) : null;
     res.json({ ok: true, qr: qrDataUrl });
   });
 
+  // Send text message
   router.post("/send", async (req, res) => {
     try {
       if (!ready) return res.status(503).json({ ok: false, error: "WhatsApp not connected" });
@@ -64,6 +70,7 @@ export function initWhatsApp(io = null) {
     }
   });
 
+  // Send media (image, file, etc.)
   router.post("/send-media", async (req, res) => {
     try {
       if (!ready) return res.status(503).json({ ok: false, error: "WhatsApp not connected" });
