@@ -4,451 +4,247 @@ import axios from "axios";
 import { io } from "socket.io-client";
 
 /**
- * Dashboard component (uses VITE_API_URL)
- * Changes:
- * - Removed "Messages today" and "Placeholder" cards.
- * - Replaced "Send Broadcast" with "Send".
- * - Added clients list with checkboxes + Select all / Clear selection.
- * - Total clients now shows number of selected clients on this page.
+ * Dashboard (linked with WhatsApp Web)
+ * - Uses /api/whatsapp-web/* instead of /api/messages/*
+ * - Displays QR and connection status in real time
+ * - Allows sending messages via WhatsApp Web
  */
 
 export default function Dashboard() {
-  const [summary, setSummary] = useState(null);
-  const [loadingSummary, setLoadingSummary] = useState(true);
-
   const [waConnected, setWaConnected] = useState(false);
   const [qrVisible, setQrVisible] = useState(false);
   const [qrSrc, setQrSrc] = useState("");
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState(null);
-  const [sendAllResult, setSendAllResult] = useState(null);
-
-  const [messageText, setMessageText] = useState("");
-  const [numbersText, setNumbersText] = useState("");
-
   const [clients, setClients] = useState([]);
   const [selectedClients, setSelectedClients] = useState(new Set());
-  const [clientsLoading, setClientsLoading] = useState(false);
+  const [messageText, setMessageText] = useState("");
 
-  const socketRef = useRef(null);
   const base = import.meta.env.VITE_API_URL || "";
+  const socketRef = useRef(null);
 
-  // Fetch overview summary (replaces analytics/summary)
-  useEffect(() => {
-    const url = (base ? `${base}` : "") + "/api/overview";
-    let mounted = true;
-    setLoadingSummary(true);
-    axios.get(url)
-      .then(r => {
-        const payload = r.data ?? {};
-        const s = {
-          totalSales: payload.totalSales ?? payload.data?.totalSales ?? payload.total_sales ?? null,
-          netProfit: payload.netProfit ?? payload.data?.netProfit ?? payload.net_profit ?? null,
-          expenses: payload.expenses ?? payload.data?.expenses ?? null,
-          invoiceCount: payload.invoiceCount ?? payload.data?.invoiceCount ?? null,
-          totalClients: payload.totalClients ?? payload.total_clients ?? null
-        };
-        if (mounted) setSummary(s);
-      })
-      .catch((e) => {
-        console.warn("dashboard overview fetch failed", e?.message || e);
-        if (mounted) setSummary(null);
-      })
-      .finally(() => { if (mounted) setLoadingSummary(false); });
-
-    return () => { mounted = false; };
-  }, [base]);
-
-  // Socket setup for whatsapp events (unchanged)
+  // Connect socket.io to receive live QR and status
   useEffect(() => {
     const socketUrl = base || undefined;
     const socket = io(socketUrl, { autoConnect: true });
     socketRef.current = socket;
 
-    socket.on("connect", () => {
-      socket.emit("whatsapp:status", (res) => {
-        if (res && typeof res.connected !== "undefined") setWaConnected(!!res.connected);
-      });
+    socket.on("connect", () => console.log("Socket connected"));
+    socket.on("whatsapp:qr", (data) => {
+      if (data && data.qrDataUrl) {
+        setQrSrc(data.qrDataUrl);
+        setQrVisible(true);
+      }
     });
-
-    socket.on("whatsapp:ready", () => setWaConnected(true));
-    socket.on("whatsapp:authenticated", () => setWaConnected(true));
+    socket.on("whatsapp:status", (data) => {
+      setWaConnected(!!data?.connected);
+    });
     socket.on("whatsapp:disconnected", () => setWaConnected(false));
-    socket.on("whatsapp:auth_failure", () => setWaConnected(false));
-
-    socket.on("whatsapp:qr", (payload) => {
-      const src = (base ? `${base}` : "") + "/api/messages/qr.png?ts=" + Date.now();
-      setQrSrc(src);
-      setQrVisible(true);
-    });
-
-    socket.on("whatsapp:init_error", (data) => {
-      console.warn("WhatsApp init error:", data);
-      setWaConnected(false);
-    });
 
     return () => {
-      if (socket) {
-        socket.off("whatsapp:ready");
-        socket.off("whatsapp:authenticated");
-        socket.off("whatsapp:disconnected");
-        socket.off("whatsapp:qr");
-        socket.off("whatsapp:init_error");
-        socket.disconnect();
-      }
+      socket.disconnect();
       socketRef.current = null;
     };
   }, [base]);
 
-  // Quick status check for whatsapp endpoint
+  // Periodic status check (backup)
   useEffect(() => {
-    const check = async () => {
+    const fetchStatus = async () => {
       try {
-        const res = await axios.get((base ? `${base}` : "") + "/api/messages/status");
+        const res = await axios.get(`${base}/api/whatsapp-web/status`);
         setWaConnected(!!res.data?.connected);
-      } catch (e) {
+      } catch {
         setWaConnected(false);
       }
     };
-    check();
+    fetchStatus();
   }, [base]);
 
-  // Fetch clients for Dashboard list
+  // Load clients
   useEffect(() => {
-    fetchClientsForList();
+    (async () => {
+      try {
+        const res = await axios.get(`${base}/api/clients`);
+        const list = res.data?.clients ?? res.data ?? [];
+        setClients(list);
+      } catch {
+        setClients([]);
+      }
+    })();
   }, [base]);
 
-  async function fetchClientsForList() {
-    setClientsLoading(true);
-    try {
-      const res = await axios.get((base ? `${base}` : "") + "/api/clients");
-      const data = res.data?.clients ?? res.data?.data ?? res.data ?? [];
-      setClients(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.warn("Failed to load clients for dashboard", err);
-      setClients([]);
-    } finally {
-      setClientsLoading(false);
-    }
-  }
-
-  const handleToggleClient = (id) => {
-    setSelectedClients(prev => {
-      const n = new Set(prev);
-      if (n.has(id)) n.delete(id); else n.add(id);
-      return n;
+  // Select / deselect clients
+  const toggleClient = (id) => {
+    setSelectedClients((prev) => {
+      const copy = new Set(prev);
+      copy.has(id) ? copy.delete(id) : copy.add(id);
+      return copy;
     });
   };
 
-  const selectAllClients = () => {
-    setSelectedClients(new Set(clients.map(c => c.id ?? c._id ?? c.phone ?? c.name)));
-  };
-
+  const selectAll = () => setSelectedClients(new Set(clients.map((c) => c.id || c._id)));
   const clearSelection = () => setSelectedClients(new Set());
 
-  const parseNumbersInput = (text) => {
-    if (!text || !text.trim()) return [];
-    const trimmed = text.trim();
+  // Show QR manually
+  const handleShowQr = async () => {
     try {
-      const parsed = JSON.parse(trimmed);
-      if (Array.isArray(parsed)) return parsed.map(String);
-    } catch (e) { }
-    const parts = trimmed.split(/[\n,;]+/);
-    return parts.map(p => p.trim()).filter(Boolean);
+      const res = await axios.get(`${base}/api/whatsapp-web/qr`);
+      if (res.data?.qr) {
+        setQrSrc(res.data.qr);
+        setQrVisible(true);
+      } else {
+        alert("No QR available. Wait for WhatsApp client to generate one.");
+      }
+    } catch {
+      alert("Failed to fetch QR.");
+    }
   };
 
-  const handleSendBroadcast = async (e) => {
+  // Send messages to selected clients
+  const handleSend = async (e) => {
     e.preventDefault();
-    const numbersArr = parseNumbersInput(numbersText);
-    if (!numbersArr.length && selectedClients.size === 0) {
-      alert("Please enter numbers or select clients to send to.");
-      return;
-    }
-    if (!messageText.trim()) {
-      alert("Please enter a message.");
-      return;
-    }
+    if (!messageText.trim()) return alert("Enter message text.");
+    if (selectedClients.size === 0) return alert("Select clients to send.");
 
     setSending(true);
     setSendResult(null);
 
     try {
-      const payload = { numbers: numbersArr.length ? numbersArr : Array.from(selectedClients), message: messageText.trim() };
-      const res = await axios.post((base ? `${base}` : "") + "/api/messages", payload, { timeout: 60000 });
-      setSendResult(res.data);
-      if (res.data && res.data.ok) {
-        alert("Sent. Check result below.");
-      } else {
-        alert("Server response: " + (res.data?.error || JSON.stringify(res.data)));
+      const numbers = Array.from(selectedClients).map((id) => {
+        const c = clients.find((x) => x.id === id || x._id === id);
+        return c?.phone;
+      }).filter(Boolean);
+
+      const results = [];
+      for (const n of numbers) {
+        const res = await axios.post(`${base}/api/whatsapp-web/send`, {
+          to: n,
+          message: messageText.trim(),
+        });
+        results.push(res.data);
       }
+
+      setSendResult(results);
+      alert("Messages sent successfully.");
     } catch (err) {
-      console.error("Send broadcast failed:", err);
-      if (err.response && err.response.status === 503) {
-        alert("WhatsApp not connected (503).");
-        setWaConnected(false);
-      } else {
-        alert("Send failed: " + (err.message || JSON.stringify(err)));
-      }
+      console.error("Send failed:", err);
+      alert("Error sending messages.");
     } finally {
       setSending(false);
     }
-  };
-
-  // Send to all clients (existing behavior)
-  const handleSendToAll = async () => {
-    if (!confirm("Send this message to ALL clients? Make sure you want to broadcast.")) return;
-    setSendAllResult(null);
-
-    if (!messageText.trim()) {
-      alert("Please enter a message to send.");
-      return;
-    }
-
-    setSending(true);
-    try {
-      const clientsRes = await axios.get((base ? `${base}` : "") + "/api/clients", { timeout: 60000 });
-      let clientsList = [];
-      if (clientsRes.data) {
-        clientsList = clientsRes.data.clients ?? clientsRes.data.data ?? clientsRes.data ?? [];
-      }
-      const numbers = Array.isArray(clientsList) ? clientsList.map(c => c.phone).filter(Boolean) : [];
-      if (!numbers.length) {
-        alert("No client phone numbers found to send to.");
-        setSending(false);
-        return;
-      }
-
-      const res = await axios.post((base ? `${base}` : "") + "/api/messages", { numbers, message: messageText.trim() }, { timeout: 120000 });
-      setSendAllResult(res.data);
-      if (res.data && res.data.ok) {
-        alert("Broadcast sent to all clients (check results below).");
-      } else {
-        alert("Server response: " + (res.data?.error || JSON.stringify(res.data)));
-      }
-    } catch (err) {
-      console.error("Send to all failed:", err);
-      setSendAllResult({ ok: false, error: err.message || String(err) });
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handleShowQr = async () => {
-    try {
-      const res = await axios.get((base ? `${base}` : "") + "/api/messages/qr");
-      if (res.data && res.data.qr) {
-        setQrSrc((base ? `${base}` : "") + "/api/messages/qr.png?ts=" + Date.now());
-        setQrVisible(true);
-      } else {
-        alert("No QR available currently.");
-      }
-    } catch (err) {
-      console.error("Failed to fetch QR:", err);
-      alert("Failed to fetch QR from server. Check server logs.");
-    }
-  };
-
-  const closeQrModal = () => {
-    setQrVisible(false);
   };
 
   return (
-    <div className="space-y-6 p-6">
-      <h2 className="text-2xl font-semibold mb-4">Dashboard</h2>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="p-4 bg-white rounded-xl shadow-sm border">
-          <div className="text-sm text-gray-500">Total clients (selected)</div>
-          <div className="text-3xl font-bold">{selectedClients.size}</div>
-        </div>
+    <div className="p-6 space-y-6">
+      <h2 className="text-2xl font-semibold mb-4">Dashboard (WhatsApp Web)</h2>
 
-        {/* Removed Messages today and Placeholder cards per request */}
-
-        <div className="p-4 bg-white rounded-xl shadow-sm border">
-          <div className="text-sm text-gray-500">WhatsApp Status</div>
-          <div className="text-2xl font-medium">{waConnected ? "Connected" : "Not connected"}</div>
+      <div className="p-4 bg-white rounded-xl shadow-sm border flex items-center justify-between">
+        <div>
+          <div className="text-gray-600 text-sm">WhatsApp Web Status:</div>
+          <div className="text-xl font-bold">{waConnected ? "Connected ✅" : "Not Connected ❌"}</div>
         </div>
+        <button
+          onClick={handleShowQr}
+          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+        >
+          Show QR
+        </button>
       </div>
 
-      <div className="mt-6 bg-white rounded-xl p-6 shadow-sm border">
-        <div className="flex items-center gap-3 mb-4">
+      <form onSubmit={handleSend} className="bg-white p-6 rounded-xl shadow-sm border space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Message</label>
+          <textarea
+            rows={3}
+            value={messageText}
+            onChange={(e) => setMessageText(e.target.value)}
+            className="w-full border rounded p-2"
+            placeholder="Type your message..."
+          />
+        </div>
+        <div className="flex gap-3">
           <button
-            id="showQrBtn"
-            onClick={handleShowQr}
-            className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700"
+            type="submit"
+            disabled={sending}
+            className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
           >
-            Show QR
+            {sending ? "Sending..." : "Send"}
           </button>
-
-          <span
-            id="waStatusIcon"
-            title={waConnected ? "WhatsApp connected" : "WhatsApp not connected"}
-            style={{
-              marginLeft: 8,
-              fontSize: 18,
-              verticalAlign: "middle",
-              color: waConnected ? "#16a34a" : "#e11d48"
-            }}
+          <button
+            type="button"
+            onClick={() => { setMessageText(""); setSendResult(null); }}
+            className="px-4 py-2 border rounded"
           >
-            ●
-          </span>
-
-          <div className="ml-4 text-sm text-gray-600">
-            {waConnected ? "Connected" : "Not connected"}
-          </div>
+            Reset
+          </button>
         </div>
 
-        <form onSubmit={handleSendBroadcast} className="space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Numbers (or leave empty to use selected clients)</label>
-            <textarea
-              rows={2}
-              placeholder={'2547XXXXXXXX,2547YYYYYYYY or JSON array like: ["2547..","2547.."]'}
-              value={numbersText}
-              onChange={(e) => setNumbersText(e.target.value)}
-              className="mt-1 block w-full border rounded p-2"
-            />
-            <p className="text-xs text-gray-500 mt-1">You can separate numbers with commas or new lines.</p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Message</label>
-            <textarea
-              rows={4}
-              placeholder="Type message here"
-              value={messageText}
-              onChange={(e) => setMessageText(e.target.value)}
-              className="mt-1 block w-full border rounded p-2"
-            />
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="submit"
-              disabled={sending}
-              className={`px-4 py-2 rounded text-white ${sending ? "bg-gray-400" : "bg-green-600 hover:bg-green-700"}`}
-            >
-              {sending ? "Sending..." : "Send"}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleSendToAll}
-              disabled={sending}
-              className="px-3 py-2 rounded border"
-            >
-              {sending ? "Sending..." : "Send to all clients"}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { setMessageText(""); setNumbersText(""); setSendResult(null); setSendAllResult(null); }}
-              className="px-3 py-2 rounded border"
-            >
-              Reset
-            </button>
-          </div>
-
-          {sendResult && (
-            <div className="mt-3 p-3 bg-gray-50 rounded border text-sm">
-              <strong>Send result:</strong>
-              <pre style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{JSON.stringify(sendResult, null, 2)}</pre>
-            </div>
-          )}
-
-          {sendAllResult && (
-            <div className="mt-3 p-3 bg-gray-50 rounded border text-sm">
-              <strong>Send all result:</strong>
-              <pre style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{JSON.stringify(sendAllResult, null, 2)}</pre>
-            </div>
-          )}
-        </form>
-      </div>
-
-      {/* Clients list with checkboxes */}
-      <div className="bg-white rounded-xl p-6 shadow-sm border">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-semibold">Clients (select recipients)</h3>
-          <div className="flex gap-2">
-            <button onClick={selectAllClients} className="px-3 py-1 border rounded">Select all</button>
-            <button onClick={clearSelection} className="px-3 py-1 border rounded">Clear</button>
-            <button
-              onClick={() => {
-                // assemble numbers and prefill numbers textarea for convenience
-                const nums = clients.map(c => c.phone).filter(Boolean);
-                setNumbersText(nums.join(","));
-                alert("Phone numbers copied into Numbers box. You can edit before sending.");
-              }}
-              className="px-3 py-1 border rounded"
-            >
-              Load numbers into field
-            </button>
-          </div>
-        </div>
-
-        {clientsLoading ? (
-          <div>Loading clients...</div>
-        ) : (
-          <div className="max-h-64 overflow-auto border rounded">
-            <table className="w-full text-left">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-3 py-2">#</th>
-                  <th className="px-3 py-2"></th>
-                  <th className="px-3 py-2">Name</th>
-                  <th className="px-3 py-2">Phone</th>
-                  <th className="px-3 py-2">Area</th>
-                </tr>
-              </thead>
-              <tbody>
-                {clients.map((c, i) => {
-                  const id = c.id ?? c._id ?? `${c.phone}-${i}`;
-                  return (
-                    <tr key={id} className="border-t">
-                      <td className="px-3 py-2">{i+1}</td>
-                      <td className="px-3 py-2">
-                        <input type="checkbox" checked={selectedClients.has(id)} onChange={() => handleToggleClient(id)} />
-                      </td>
-                      <td className="px-3 py-2">{c.name}</td>
-                      <td className="px-3 py-2">{c.phone}</td>
-                      <td className="px-3 py-2">{c.area}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        {sendResult && (
+          <div className="mt-4 bg-gray-50 border rounded p-3 text-sm">
+            <b>Results:</b>
+            <pre>{JSON.stringify(sendResult, null, 2)}</pre>
           </div>
         )}
+      </form>
+
+      <div className="bg-white rounded-xl p-6 shadow-sm border">
+        <div className="flex justify-between mb-3">
+          <h3 className="text-lg font-semibold">Clients</h3>
+          <div className="flex gap-2">
+            <button onClick={selectAll} className="px-3 py-1 border rounded">Select all</button>
+            <button onClick={clearSelection} className="px-3 py-1 border rounded">Clear</button>
+          </div>
+        </div>
+
+        <div className="max-h-64 overflow-auto border rounded">
+          <table className="w-full text-left">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-3 py-2">#</th>
+                <th className="px-3 py-2">Select</th>
+                <th className="px-3 py-2">Name</th>
+                <th className="px-3 py-2">Phone</th>
+              </tr>
+            </thead>
+            <tbody>
+              {clients.map((c, i) => {
+                const id = c.id ?? c._id ?? `${i}`;
+                const selected = selectedClients.has(id);
+                return (
+                  <tr key={id} className="border-t">
+                    <td className="px-3 py-2">{i + 1}</td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => toggleClient(id)}
+                      />
+                    </td>
+                    <td className="px-3 py-2">{c.name}</td>
+                    <td className="px-3 py-2">{c.phone}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {qrVisible && (
-        <div
-          id="qrModal"
-          role="dialog"
-          aria-hidden={!qrVisible}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000
-          }}
-        >
-          <div style={{ position: "relative", background: "#fff", padding: 16, borderRadius: 8, textAlign: "center", maxWidth: 380, width: "90%" }}>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-4 rounded-xl text-center relative">
             <button
-              id="closeQr"
-              onClick={closeQrModal}
-              style={{ position: "absolute", right: 12, top: 8, background: "transparent", border: 0, fontSize: 22, cursor: "pointer" }}
+              onClick={() => setQrVisible(false)}
+              className="absolute top-2 right-3 text-xl font-bold"
             >
               ×
             </button>
-
-            <h3 style={{ marginBottom: 12 }}>Scan QR with WhatsApp</h3>
-            <div style={{ marginBottom: 12 }}>
-              <img id="qrImage" src={qrSrc} alt="WhatsApp QR" style={{ width: 300, height: 300, objectFit: "contain" }} />
-            </div>
-            <p style={{ fontSize: 13, color: "#444" }}>If QR not showing or invalid, check server logs and ensure the server generated a QR.</p>
+            <h3 className="text-lg font-semibold mb-2">Scan QR with WhatsApp</h3>
+            {qrSrc ? (
+              <img src={qrSrc} alt="QR" className="w-72 h-72 mx-auto" />
+            ) : (
+              <p>No QR available</p>
+            )}
           </div>
         </div>
       )}

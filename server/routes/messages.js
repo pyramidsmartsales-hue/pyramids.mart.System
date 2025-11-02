@@ -1,20 +1,23 @@
 // server/routes/messages.js
 import express from "express";
-import { findClientByPhone } from "../data.js";
+import fetch from "node-fetch";
 
 const router = express.Router();
 
-/**
- * Simple messages/broadcast route (mock).
- * This avoids dependency on an external whatsapp.service which wasn't included.
- * It accepts POST { numbers: [], message } and returns a mock result.
- */
+// If WA Cloud API route is enabled in server, we can proxy to it.
+// Otherwise this remains a mock.
+
+const WA_PHONE_ID = process.env.WA_PHONE_NUMBER_ID;
+const WA_TOKEN = process.env.WA_ACCESS_TOKEN;
+const useWhatsAppCloud = !!(WA_PHONE_ID && WA_TOKEN);
 
 router.get("/status", async (req, res) => {
-  res.json({ ok: true, connected: false });
+  if (useWhatsAppCloud) return res.json({ ok: true, connected: true, provider: "whatsapp-cloud" });
+  return res.json({ ok: true, connected: false, provider: "mock" });
 });
 
 router.get("/qr", async (req, res) => {
+  // No QR for cloud API. Return placeholder.
   res.json({ ok: true, qr: null });
 });
 
@@ -25,29 +28,47 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Numbers and message are required" });
     }
 
-    // Normalize numbers: if clients objects were passed instead of plain numbers, map phone
+    // If WhatsApp Cloud configured, send via API per-number (be mindful of rate limits).
+    if (useWhatsAppCloud) {
+      const results = [];
+      for (const to of numbers) {
+        // ensure format like "2547..." or "+2547..."
+        const r = await fetch(`https://graph.facebook.com/v17.0/${WA_PHONE_ID}/messages`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${WA_TOKEN}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to,
+            type: "text",
+            text: { body: message }
+          })
+        });
+        const json = await r.json();
+        results.push({ to, status: r.ok ? "sent" : "failed", raw: json });
+      }
+      return res.json({ ok: true, results });
+    }
+
+    // fallback mock: echo
     const normalized = (numbers || []).map(n => {
       if (typeof n === "string") return n;
       if (n && n.phone) return n.phone;
-      if (n && n.id) {
-        // try to find client by id
-        const c = findClientByPhone(n.id);
-        return c ? c.phone : String(n.id);
-      }
+      if (n && n.id) return String(n.id);
       return String(n);
     });
 
-    // Mock: return list of delivered & failed (none failed)
     const result = {
       sent: normalized.length,
       details: normalized.map(num => ({ to: num, status: "mock-sent" })),
       messageSummary: (message || "").slice(0, 120)
     };
-
     return res.json({ ok: true, result });
   } catch (err) {
     console.error("messages:send error", err);
-    res.status(500).json({ ok: false, error: err.message || "server error" });
+    res.status(500).json({ ok: false, error: err.message || String(err) });
   }
 });
 
