@@ -5,7 +5,7 @@ import { io } from "socket.io-client";
 
 /**
  * Dashboard component (uses VITE_API_URL)
- * Fixed parseNumbersInput to avoid tokenizer issues and avoid template backticks.
+ * Minimal edits: use /api/overview and add "send to all clients" feature.
  */
 
 export default function Dashboard() {
@@ -17,6 +17,7 @@ export default function Dashboard() {
   const [qrSrc, setQrSrc] = useState("");
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState(null);
+  const [sendAllResult, setSendAllResult] = useState(null);
 
   const [messageText, setMessageText] = useState("");
   const [numbersText, setNumbersText] = useState("");
@@ -24,18 +25,34 @@ export default function Dashboard() {
   const socketRef = useRef(null);
   const base = import.meta.env.VITE_API_URL || "";
 
+  // Fetch overview summary (replaces analytics/summary)
   useEffect(() => {
-    const url = base ? `${base}/api/analytics/summary` : "/api/analytics/summary";
+    const url = (base ? `${base}` : "") + "/api/overview";
     let mounted = true;
     setLoadingSummary(true);
     axios.get(url)
-      .then(r => { if (mounted) setSummary(r.data?.data ?? null); })
-      .catch((e) => { console.warn("dashboard summary fetch failed", e?.message || e); })
+      .then(r => {
+        // support various response shapes
+        const payload = r.data ?? {};
+        // try common keys
+        const s = {
+          totalSales: payload.totalSales ?? payload.data?.totalSales ?? payload.total_sales ?? null,
+          netProfit: payload.netProfit ?? payload.data?.netProfit ?? payload.net_profit ?? null,
+          expenses: payload.expenses ?? payload.data?.expenses ?? null,
+          invoiceCount: payload.invoiceCount ?? payload.data?.invoiceCount ?? null
+        };
+        if (mounted) setSummary(s);
+      })
+      .catch((e) => {
+        console.warn("dashboard overview fetch failed", e?.message || e);
+        if (mounted) setSummary(null);
+      })
       .finally(() => { if (mounted) setLoadingSummary(false); });
 
     return () => { mounted = false; };
   }, [base]);
 
+  // Socket setup for whatsapp events (unchanged)
   useEffect(() => {
     const socketUrl = base || undefined;
     const socket = io(socketUrl, { autoConnect: true });
@@ -76,6 +93,7 @@ export default function Dashboard() {
     };
   }, [base]);
 
+  // Quick status check for whatsapp endpoint
   useEffect(() => {
     const check = async () => {
       try {
@@ -120,7 +138,7 @@ export default function Dashboard() {
       // not JSON, fallthrough
     }
 
-    // Split on commas, semicolons or newlines (use RegExp literal safely)
+    // Split on commas, semicolons or newlines
     const parts = trimmed.split(/[\n,;]+/);
     return parts.map(p => p.trim()).filter(Boolean);
   };
@@ -142,7 +160,7 @@ export default function Dashboard() {
 
     try {
       const payload = { numbers: numbersArr, message: messageText.trim() };
-      const res = await axios.post((base ? `${base}` : "") + "/api/messages", payload);
+      const res = await axios.post((base ? `${base}` : "") + "/api/messages", payload, { timeout: 60000 });
       setSendResult(res.data);
       if (res.data && res.data.ok) {
         alert("Sent. Check result below.");
@@ -157,6 +175,45 @@ export default function Dashboard() {
       } else {
         alert("Send failed: " + (err.message || JSON.stringify(err)));
       }
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // NEW: send to all clients (fetch /api/clients then broadcast)
+  const handleSendToAll = async () => {
+    if (!confirm("Send this message to ALL clients? Make sure you want to broadcast.")) return;
+    setSendAllResult(null);
+
+    if (!messageText.trim()) {
+      alert("Please enter a message to send.");
+      return;
+    }
+
+    setSending(true);
+    try {
+      const clientsRes = await axios.get((base ? `${base}` : "") + "/api/clients", { timeout: 60000 });
+      let clients = [];
+      if (clientsRes.data) {
+        clients = clientsRes.data.clients ?? clientsRes.data.data ?? clientsRes.data ?? [];
+      }
+      const numbers = Array.isArray(clients) ? clients.map(c => c.phone).filter(Boolean) : [];
+      if (!numbers.length) {
+        alert("No client phone numbers found to send to.");
+        setSending(false);
+        return;
+      }
+
+      const res = await axios.post((base ? `${base}` : "") + "/api/messages", { numbers, message: messageText.trim() }, { timeout: 120000 });
+      setSendAllResult(res.data);
+      if (res.data && res.data.ok) {
+        alert("Broadcast sent to all clients (check results below).");
+      } else {
+        alert("Server response: " + (res.data?.error || JSON.stringify(res.data)));
+      }
+    } catch (err) {
+      console.error("Send to all failed:", err);
+      setSendAllResult({ ok: false, error: err.message || String(err) });
     } finally {
       setSending(false);
     }
@@ -245,7 +302,16 @@ export default function Dashboard() {
 
             <button
               type="button"
-              onClick={() => { setMessageText(""); setNumbersText(""); setSendResult(null); }}
+              onClick={handleSendToAll}
+              disabled={sending}
+              className="px-3 py-2 rounded border"
+            >
+              {sending ? "Sending..." : "Send to all clients"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => { setMessageText(""); setNumbersText(""); setSendResult(null); setSendAllResult(null); }}
               className="px-3 py-2 rounded border"
             >
               Reset
@@ -256,6 +322,13 @@ export default function Dashboard() {
             <div className="mt-3 p-3 bg-gray-50 rounded border text-sm">
               <strong>Send result:</strong>
               <pre style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{JSON.stringify(sendResult, null, 2)}</pre>
+            </div>
+          )}
+
+          {sendAllResult && (
+            <div className="mt-3 p-3 bg-gray-50 rounded border text-sm">
+              <strong>Send all result:</strong>
+              <pre style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{JSON.stringify(sendAllResult, null, 2)}</pre>
             </div>
           )}
         </form>
