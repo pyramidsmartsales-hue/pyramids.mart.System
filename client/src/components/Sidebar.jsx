@@ -1,3 +1,4 @@
+// src/components/Sidebar.jsx
 import React from "react";
 
 function IconHome() {
@@ -25,10 +26,16 @@ function IconAnalytics() {
     <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M3 3v18h18"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 13v6M12 7v12M17 10v9"/></svg>
   );
 }
+function IconOverview() {
+  return (
+    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" strokeWidth="1.5"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 12h10M7 7h10M7 17h6"/></svg>
+  );
+}
 
 export default function Sidebar({ route, onNavigate }) {
   const items = [
     { id: "dashboard", label: "Dashboard", icon: <IconHome /> },
+    { id: "overview", label: "Overview", icon: <IconOverview /> }, // <-- NEW
     { id: "clients", label: "Clients", icon: <IconUsers /> },
     { id: "messages", label: "Messages", icon: <IconChat /> },
     { id: "templates", label: "Templates", icon: <IconTemplate /> },

@@ -12,6 +12,7 @@ import clientsRouter from "./routes/clients.js";
 import messagesRouter from "./routes/messages.js";
 import templatesRouter from "./routes/templates.js";
 import analyticsRouter from "./routes/analytics.js";
+import overviewRouter from "./routes/overview.js"; // <-- NEW
 import initWhatsApp from "./services/whatsapp.service.js";
 import socketHandlers from "./socket/index.js";
 
@@ -85,6 +86,7 @@ app.use("/api/clients", clientsRouter);
 app.use("/api/messages", messagesRouter);
 app.use("/api/templates", templatesRouter);
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/overview", overviewRouter); // <-- NEW: overview endpoint
 
 app.get("/", (req, res) => res.send("OK — Pyramids Mart Service API"));
 
