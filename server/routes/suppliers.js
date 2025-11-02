@@ -63,7 +63,7 @@ router.post("/from-sheet", async (req, res) => {
       if (!found) return res.status(404).json({ error: "supplier not found" });
       found.phone = row.phone ?? found.phone;
       found.company = row.company ?? found.company;
-      found.balance = Number(row.balance ?? found.balance || 0);
+      found.balance = Number((row.balance ?? found.balance) || 0);
       found.products = Array.isArray(row.products) ? row.products : found.products;
       return res.json({ ok: true, updated: found });
     } else {

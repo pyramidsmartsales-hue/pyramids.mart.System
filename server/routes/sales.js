@@ -16,7 +16,7 @@ router.post("/checkout", async (req, res) => {
     const payment = body.payment || "cash";
     const discountPct = Number(body.discountPct || body.discount || 0);
     const customerPhone = body.customerPhone || null;
-    const pointsAwarded = Number(body.pointsAwarded || 0);
+    const pointsAwardedBody = (body.pointsAwarded !== undefined && body.pointsAwarded !== null) ? Number(body.pointsAwarded) : null;
 
     // compute raw total
     const rawTotal = items.reduce((s, it) => {
@@ -43,7 +43,7 @@ router.post("/checkout", async (req, res) => {
       total,
       date: new Date().toISOString(),
       client_phone: customerPhone || null,
-      pointsAwarded: pointsAwarded || Math.floor(total / 100)
+      pointsAwarded: (pointsAwardedBody !== null) ? pointsAwardedBody : Math.floor(total / 100)
     };
     DATA.SALES.push(sale);
 
@@ -51,7 +51,8 @@ router.post("/checkout", async (req, res) => {
     if (customerPhone) {
       const client = findClientByPhone(customerPhone);
       if (client) {
-        client.points = Number(client.points || 0) + Number(sale.pointsAwarded || sale.pointsAwarded === 0 ? sale.pointsAwarded : Math.floor(total / 100));
+        const awarded = (sale.pointsAwarded !== undefined && sale.pointsAwarded !== null) ? Number(sale.pointsAwarded) : Math.floor(total / 100);
+        client.points = Number(client.points || 0) + awarded;
         try {
           const cliRes = await syncClientToSheet(client);
           console.log("Sheets sync (client after sale) succeeded:", cliRes);
