@@ -7,7 +7,6 @@ const router = express.Router();
 
 /**
  * GET /api/purchases
- * returns recorded purchases (invoices)
  */
 router.get("/", async (req, res) => {
   res.json({ invoices: DATA.PURCHASES });
@@ -15,8 +14,7 @@ router.get("/", async (req, res) => {
 
 /**
  * POST /api/purchases
- * body: { number, supplier, date, total, items: [{ id, qty, price }] }
- * When a purchase is created we increase product stock by item.qty
+ * Create purchase (increase stock) and sync
  */
 router.post("/", async (req, res) => {
   try {
@@ -30,25 +28,23 @@ router.post("/", async (req, res) => {
       items: Array.isArray(body.items) ? body.items : []
     };
 
-    // increase stock for each item
+    // increase stock
     for (const it of inv.items) {
       const prodId = it.id || it.productId;
       const qty = Number(it.qty || 0);
-      if (prodId && qty) {
-        adjustProductQty(prodId, qty);
-      }
+      if (prodId && qty) adjustProductQty(prodId, qty);
     }
 
     DATA.PURCHASES.push(inv);
 
-    // try sync purchase to Sheets
     try {
-      await syncPurchaseToSheet(inv);
-    } catch (e) {
-      console.warn("Sheets sync (create purchase) failed:", e && e.message ? e.message : e);
+      const result = await syncPurchaseToSheet(inv);
+      console.log("Sheets sync (create purchase) succeeded:", result);
+      return res.status(201).json({ invoice: inv, sheetsSync: { success: true, result } });
+    } catch (err) {
+      console.error("Sheets sync (create purchase) failed:", err && err.message ? err.message : err);
+      return res.status(201).json({ invoice: inv, sheetsSync: { success: false, error: (err && err.message) || String(err) } });
     }
-
-    res.status(201).json({ invoice: inv });
   } catch (err) {
     console.error("purchases:create error", err);
     res.status(500).json({ error: "server error" });
@@ -56,8 +52,8 @@ router.post("/", async (req, res) => {
 });
 
 /**
- * POST /api/expenses
- * body: { date, amount, category, supplier, invoice_no, payment_method, notes }
+ * POST /api/purchases/expenses
+ * create an expense record (no sheet sync by default)
  */
 router.post("/expenses", async (req, res) => {
   try {
@@ -73,13 +69,45 @@ router.post("/expenses", async (req, res) => {
       notes: body.notes || ""
     };
     DATA.EXPENSES.push(exp);
-
-    // optional: sync expenses to a sheet (if you add an Expenses sheet you can implement a sync here)
-    // For now, no automatic sync for expenses unless you want it.
-
+    // (optional) you can sync expenses to a dedicated sheet if implemented in sheetsSync
     res.status(201).json({ expense: exp });
   } catch (err) {
     console.error("expenses:create error", err);
+    res.status(500).json({ error: "server error" });
+  }
+});
+
+/**
+ * POST /api/purchases/from-sheet
+ * Accept purchase/invoice created via Google Sheets
+ */
+router.post("/from-sheet", async (req, res) => {
+  try {
+    const { action, row } = req.body || {};
+    if (!row) return res.status(400).json({ error: "row required" });
+
+    if (action === "create") {
+      const inv = {
+        id: DATA.NEXT_PURCHASE_ID++,
+        number: row.number || `INV-${Date.now()}`,
+        supplier: row.supplier || "Unknown",
+        date: row.date || new Date().toISOString(),
+        total: Number(row.total || 0),
+        items: Array.isArray(row.items) ? row.items : []
+      };
+      // adjust stock
+      for (const it of inv.items) {
+        const prodId = it.id || it.productId;
+        const qty = Number(it.qty || 0);
+        if (prodId && qty) adjustProductQty(prodId, qty);
+      }
+      DATA.PURCHASES.push(inv);
+      return res.json({ ok: true, invoice: inv });
+    }
+
+    return res.status(400).json({ error: "unsupported action" });
+  } catch (err) {
+    console.error("purchases:from-sheet error", err);
     res.status(500).json({ error: "server error" });
   }
 });

@@ -9,37 +9,35 @@ router.get("/", async (req, res) => {
     const start = req.query.start || new Date().toISOString().slice(0, 10);
     const end = req.query.end || start;
 
-    // total sales computed from DATA.SALES
+    // total sales
     const totalSales = DATA.SALES.reduce((s, sale) => s + Number(sale.total || 0), 0);
 
-    // expenses computed from DATA.EXPENSES
+    // expenses
     const totalExpenses = DATA.EXPENSES.reduce((s, ex) => s + Number(ex.amount || 0), 0);
 
+    // invoices (sales count)
     const invoiceCount = DATA.SALES.length;
 
     const netProfit = totalSales - totalExpenses;
 
-    // salesTrend: aggregate sales by date string (yyyy-mm-dd)
+    // sales trend aggregate by date
     const trendMap = {};
     for (const sale of DATA.SALES) {
       const d = (sale.date || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
       if (!trendMap[d]) trendMap[d] = { date: d, sales: 0, expenses: 0, netProfit: 0 };
       trendMap[d].sales += Number(sale.total || 0);
     }
-
-    // map expenses into same trend map by date
     for (const ex of DATA.EXPENSES) {
       const d = (ex.date || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
       if (!trendMap[d]) trendMap[d] = { date: d, sales: 0, expenses: 0, netProfit: 0 };
       trendMap[d].expenses += Number(ex.amount || 0);
     }
 
-    // compute netProfit per day
     const salesTrend = Object.values(trendMap).sort((a, b) => a.date.localeCompare(b.date)).map(row => {
-      return { ...row, netProfit: (Number(row.sales || 0) - Number(row.expenses || 0)) };
+      return { ...row, netProfit: Number(row.sales || 0) - Number(row.expenses || 0) };
     });
 
-    // topProducts: aggregate sold quantities from DATA.SALES items
+    // top selling products
     const prodAgg = {};
     for (const sale of DATA.SALES) {
       for (const it of sale.items || []) {
