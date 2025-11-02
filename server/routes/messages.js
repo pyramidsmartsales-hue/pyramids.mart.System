@@ -1,43 +1,53 @@
 // server/routes/messages.js
 import express from "express";
-import { getStatus, getQr, sendBroadcast } from "../services/whatsapp.service.js";
+import { findClientByPhone } from "../data.js";
 
 const router = express.Router();
 
-// ✅ حالة اتصال الواتساب
+/**
+ * Simple messages/broadcast route (mock).
+ * This avoids dependency on an external whatsapp.service which wasn't included.
+ * It accepts POST { numbers: [], message } and returns a mock result.
+ */
+
 router.get("/status", async (req, res) => {
-  try {
-    const status = await getStatus();
-    res.json({ ok: true, connected: status.connected });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
+  res.json({ ok: true, connected: false });
 });
 
-// ✅ الحصول على كود QR
 router.get("/qr", async (req, res) => {
-  try {
-    const qr = await getQr();
-    res.json({ ok: true, qr });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
+  res.json({ ok: true, qr: null });
 });
 
-// ✅ إرسال رسالة إلى أرقام محددة
 router.post("/", async (req, res) => {
   try {
-    const { numbers, message } = req.body;
-
-    if (!numbers || !message) {
+    const { numbers, message } = req.body || {};
+    if ((!numbers || numbers.length === 0) && !message) {
       return res.status(400).json({ ok: false, error: "Numbers and message are required" });
     }
 
-    const result = await sendBroadcast(numbers, message);
-    res.json({ ok: true, result });
+    // Normalize numbers: if clients objects were passed instead of plain numbers, map phone
+    const normalized = (numbers || []).map(n => {
+      if (typeof n === "string") return n;
+      if (n && n.phone) return n.phone;
+      if (n && n.id) {
+        // try to find client by id
+        const c = findClientByPhone(n.id);
+        return c ? c.phone : String(n.id);
+      }
+      return String(n);
+    });
+
+    // Mock: return list of delivered & failed (none failed)
+    const result = {
+      sent: normalized.length,
+      details: normalized.map(num => ({ to: num, status: "mock-sent" })),
+      messageSummary: (message || "").slice(0, 120)
+    };
+
+    return res.json({ ok: true, result });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("messages:send error", err);
+    res.status(500).json({ ok: false, error: err.message || "server error" });
   }
 });
 

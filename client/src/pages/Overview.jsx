@@ -1,12 +1,17 @@
-// src/pages/Overview.jsx
+// client/src/pages/Overview.jsx
 import React, { useEffect, useState } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend
 } from "recharts";
 
 const API = import.meta.env.VITE_API_URL || "";
 
-function KpiCard({ title, value, icon }) {
+function formatKSh(value) {
+  const num = Number(value || 0);
+  return `KSh ${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function KpiCard({ title, value }) {
   return (
     <div className="bg-white rounded-lg shadow p-4">
       <div className="flex justify-between items-center">
@@ -14,7 +19,7 @@ function KpiCard({ title, value, icon }) {
           <div className="text-sm text-gray-500">{title}</div>
           <div className="mt-2 text-2xl font-bold">{value}</div>
         </div>
-        <div className="text-3xl">{icon}</div>
+        <div className="text-2xl" />
       </div>
     </div>
   );
@@ -48,12 +53,12 @@ export default function Overview() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData({
-        totalSales: json.totalSales ?? 0,
-        netProfit: json.netProfit ?? 0,
+        totalSales: json.totalSales ?? json.total_sales ?? 0,
+        netProfit: json.netProfit ?? json.net_profit ?? 0,
         expenses: json.expenses ?? 0,
-        invoiceCount: json.invoiceCount ?? 0,
-        salesTrend: json.salesTrend ?? [],
-        topProducts: json.topProducts ?? []
+        invoiceCount: json.invoiceCount ?? json.invoice_count ?? 0,
+        salesTrend: json.salesTrend ?? json.trend ?? [],
+        topProducts: json.topProducts ?? json.topProducts ?? []
       });
     } catch (err) {
       console.error(err);
@@ -92,15 +97,15 @@ export default function Overview() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <KpiCard title="Total Sales" value={`$${Number(data.totalSales).toLocaleString()}`} icon="💰" />
-        <KpiCard title="Net Profit" value={`$${Number(data.netProfit).toLocaleString()}`} icon="📈" />
-        <KpiCard title="Expenses" value={`$${Number(data.expenses).toLocaleString()}`} icon="🧾" />
-        <KpiCard title="Invoices" value={data.invoiceCount} icon="🧮" />
+        <KpiCard title="Total Sales" value={formatKSh(data.totalSales)} />
+        <KpiCard title="Net Profit" value={formatKSh(data.netProfit)} />
+        <KpiCard title="Expenses" value={formatKSh(data.expenses)} />
+        <KpiCard title="Invoices" value={data.invoiceCount} />
       </div>
 
       <div className="bg-white rounded-lg shadow p-4">
         <div className="flex justify-between items-center mb-3">
-          <h2 className="font-medium">Sales Trend</h2>
+          <h2 className="font-medium">Sales vs Expenses vs Net Profit</h2>
           {loading && <span className="text-sm text-gray-500">Loading...</span>}
         </div>
         {error && <div className="text-red-600 mb-2">{error}</div>}
@@ -110,8 +115,11 @@ export default function Overview() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="date" />
               <YAxis />
-              <Tooltip />
-              <Line type="monotone" dataKey="sales" stroke="#2563eb" strokeWidth={2} dot={{ r: 2 }} />
+              <Tooltip formatter={(value) => `KSh ${Number(value).toLocaleString()}`} />
+              <Legend />
+              <Line type="monotone" dataKey="sales" name="Sales" stroke="#2563eb" strokeWidth={2} dot={{ r: 2 }} />
+              <Line type="monotone" dataKey="expenses" name="Expenses" stroke="#ef4444" strokeWidth={2} dot={{ r: 2 }} />
+              <Line type="monotone" dataKey="netProfit" name="Net Profit" stroke="#16a34a" strokeWidth={2} dot={{ r: 2 }} />
             </LineChart>
           </ResponsiveContainer>
         </div>

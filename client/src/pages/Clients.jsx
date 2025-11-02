@@ -35,6 +35,19 @@ export default function Clients() {
     setForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
   }
 
+  // ensure international code present; default +254 if missing (you can change default)
+  function normalizePhone(phone) {
+    if (!phone) return "";
+    const p = phone.trim();
+    if (p.startsWith("+")) return p;
+    // if starts with 0 replace with +254 (common for Kenya) - this is heuristic
+    if (p.startsWith("0")) return "+254" + p.slice(1);
+    // if looks like local number length 9 or 10, prefix +254
+    if (/^\d{9,10}$/.test(p)) return "+254" + p;
+    // otherwise return as-is
+    return p;
+  }
+
   async function onAdd(e) {
     e.preventDefault();
     setSaving(true);
@@ -49,9 +62,10 @@ export default function Clients() {
     try {
       const payload = {
         name: form.name,
-        phone: form.phone,
+        phone: normalizePhone(form.phone),
         area: form.area || "",
-        notes: form.notes || ""
+        notes: form.notes || "",
+        points: 0 // init points
       };
 
       const res = await fetch(`${API}/api/clients`, {
@@ -117,6 +131,7 @@ export default function Clients() {
                 <th>الهاتف</th>
                 <th>المنطقة</th>
                 <th>ملاحظات</th>
+                <th>نقاط</th>
               </tr>
             </thead>
             <tbody>
@@ -127,9 +142,10 @@ export default function Clients() {
                   <td className="py-2">{c.phone}</td>
                   <td className="py-2">{c.area}</td>
                   <td className="py-2">{c.notes}</td>
+                  <td className="py-2">{c.points ?? 0}</td>
                 </tr>
               )) : (
-                <tr><td colSpan="5" className="py-6 text-center text-gray-500">لا يوجد عملاء بعد.</td></tr>
+                <tr><td colSpan="6" className="py-6 text-center text-gray-500">لا يوجد عملاء بعد.</td></tr>
               )}
             </tbody>
           </table>

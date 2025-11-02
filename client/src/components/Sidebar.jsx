@@ -28,7 +28,10 @@ export default function Sidebar({ route, onNavigate }) {
         <div className="flex items-center gap-3">
           <img src="/logo.png" alt="logo" className="h-10 w-10 object-contain" />
           <div>
-            <div className="text-lg font-semibold text-teal-600">Pyramids<span className="text-violet-600">Mart</span></div>
+            <div style={{ fontWeight: 700 }}>
+              <span style={{ color: "var(--primary)", fontSize: 18 }}>Pyramids</span>
+              <span style={{ color: "var(--accent)", marginLeft: 6, fontSize: 18 }}>Mart</span>
+            </div>
             <div className="text-xs text-gray-400">Broadcast Dashboard</div>
           </div>
         </div>

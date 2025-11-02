@@ -1,54 +1,67 @@
 // server/routes/overview.js
 import express from "express";
-const router = express.Router();
+import { DATA } from "../data.js";
 
-/**
- * Overview endpoint
- * GET /api/overview?start=YYYY-MM-DD&end=YYYY-MM-DD
- *
- * NOTE:
- * - This implementation returns safe mock/default data so it won't break your app.
- * - Replace the mock logic with real DB queries (Postgres / Mongo / Sequelize / Mongoose)
- *   according to your project's DB layer.
- *
- * Example response shape:
- * {
- *   totalSales: 12345.67,
- *   expenses: 2345.67,
- *   invoiceCount: 42,
- *   netProfit: 9999.99,
- *   salesTrend: [ { date: '2025-11-01', sales: 200 }, ... ],
- *   topProducts: [ { name: 'Rice', qty: 120 }, ... ]
- * }
- */
+const router = express.Router();
 
 router.get("/", async (req, res) => {
   try {
     const start = req.query.start || new Date().toISOString().slice(0, 10);
     const end = req.query.end || start;
 
-    // =======  MOCK / DEFAULT DATA (SAFE)  =======
-    // Replace the following block with real DB queries.
-    // Example (pseudo):
-    // const totalSales = await db.query('SELECT SUM(total_amount) FROM sales WHERE date BETWEEN $1 AND $2', [start, end]);
-    // ...
-    const mockResponse = {
-      totalSales: 0,
-      expenses: 0,
-      invoiceCount: 0,
-      netProfit: 0,
-      salesTrend: [
-        // sample trend entries (empty by default)
-        // { date: start, sales: 0 }
-      ],
-      topProducts: []
-    };
+    // total sales computed from DATA.SALES
+    const totalSales = DATA.SALES.reduce((s, sale) => s + Number(sale.total || 0), 0);
 
-    // send the mock response
-    return res.json(mockResponse);
+    // expenses computed from DATA.EXPENSES
+    const totalExpenses = DATA.EXPENSES.reduce((s, ex) => s + Number(ex.amount || 0), 0);
+
+    const invoiceCount = DATA.SALES.length;
+
+    const netProfit = totalSales - totalExpenses;
+
+    // salesTrend: aggregate sales by date string (yyyy-mm-dd)
+    const trendMap = {};
+    for (const sale of DATA.SALES) {
+      const d = (sale.date || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
+      if (!trendMap[d]) trendMap[d] = { date: d, sales: 0, expenses: 0, netProfit: 0 };
+      trendMap[d].sales += Number(sale.total || 0);
+    }
+
+    // map expenses into same trend map by date
+    for (const ex of DATA.EXPENSES) {
+      const d = (ex.date || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
+      if (!trendMap[d]) trendMap[d] = { date: d, sales: 0, expenses: 0, netProfit: 0 };
+      trendMap[d].expenses += Number(ex.amount || 0);
+    }
+
+    // compute netProfit per day
+    const salesTrend = Object.values(trendMap).sort((a, b) => a.date.localeCompare(b.date)).map(row => {
+      return { ...row, netProfit: (Number(row.sales || 0) - Number(row.expenses || 0)) };
+    });
+
+    // topProducts: aggregate sold quantities from DATA.SALES items
+    const prodAgg = {};
+    for (const sale of DATA.SALES) {
+      for (const it of sale.items || []) {
+        const pid = Number(it.id || it.productId || 0);
+        const qty = Number(it.qty || 0);
+        if (!prodAgg[pid]) prodAgg[pid] = { productId: pid, qty: 0, name: it.name || it.productName || `#${pid}` };
+        prodAgg[pid].qty += qty;
+      }
+    }
+    const topProducts = Object.values(prodAgg).sort((a, b) => b.qty - a.qty).slice(0, 20);
+
+    res.json({
+      totalSales,
+      expenses: totalExpenses,
+      invoiceCount,
+      netProfit,
+      salesTrend,
+      topProducts
+    });
   } catch (err) {
-    console.error("Overview route error:", err && err.message ? err.message : err);
-    return res.status(500).json({ error: "Server error" });
+    console.error("overview error", err);
+    res.status(500).json({ error: "server error" });
   }
 });
 

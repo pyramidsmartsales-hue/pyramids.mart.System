@@ -5,7 +5,11 @@ import { io } from "socket.io-client";
 
 /**
  * Dashboard component (uses VITE_API_URL)
- * Minimal edits: use /api/overview and add "send to all clients" feature.
+ * Changes:
+ * - Removed "Messages today" and "Placeholder" cards.
+ * - Replaced "Send Broadcast" with "Send".
+ * - Added clients list with checkboxes + Select all / Clear selection.
+ * - Total clients now shows number of selected clients on this page.
  */
 
 export default function Dashboard() {
@@ -22,6 +26,10 @@ export default function Dashboard() {
   const [messageText, setMessageText] = useState("");
   const [numbersText, setNumbersText] = useState("");
 
+  const [clients, setClients] = useState([]);
+  const [selectedClients, setSelectedClients] = useState(new Set());
+  const [clientsLoading, setClientsLoading] = useState(false);
+
   const socketRef = useRef(null);
   const base = import.meta.env.VITE_API_URL || "";
 
@@ -32,14 +40,13 @@ export default function Dashboard() {
     setLoadingSummary(true);
     axios.get(url)
       .then(r => {
-        // support various response shapes
         const payload = r.data ?? {};
-        // try common keys
         const s = {
           totalSales: payload.totalSales ?? payload.data?.totalSales ?? payload.total_sales ?? null,
           netProfit: payload.netProfit ?? payload.data?.netProfit ?? payload.net_profit ?? null,
           expenses: payload.expenses ?? payload.data?.expenses ?? null,
-          invoiceCount: payload.invoiceCount ?? payload.data?.invoiceCount ?? null
+          invoiceCount: payload.invoiceCount ?? payload.data?.invoiceCount ?? null,
+          totalClients: payload.totalClients ?? payload.total_clients ?? null
         };
         if (mounted) setSummary(s);
       })
@@ -106,39 +113,46 @@ export default function Dashboard() {
     check();
   }, [base]);
 
-  const handleShowQr = async () => {
+  // Fetch clients for Dashboard list
+  useEffect(() => {
+    fetchClientsForList();
+  }, [base]);
+
+  async function fetchClientsForList() {
+    setClientsLoading(true);
     try {
-      const res = await axios.get((base ? `${base}` : "") + "/api/messages/qr");
-      if (res.data && res.data.qr) {
-        setQrSrc((base ? `${base}` : "") + "/api/messages/qr.png?ts=" + Date.now());
-        setQrVisible(true);
-      } else {
-        alert("No QR available currently.");
-      }
+      const res = await axios.get((base ? `${base}` : "") + "/api/clients");
+      const data = res.data?.clients ?? res.data?.data ?? res.data ?? [];
+      setClients(Array.isArray(data) ? data : []);
     } catch (err) {
-      console.error("Failed to fetch QR:", err);
-      alert("Failed to fetch QR from server. Check server logs.");
+      console.warn("Failed to load clients for dashboard", err);
+      setClients([]);
+    } finally {
+      setClientsLoading(false);
     }
+  }
+
+  const handleToggleClient = (id) => {
+    setSelectedClients(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
   };
 
-  const closeQrModal = () => {
-    setQrVisible(false);
+  const selectAllClients = () => {
+    setSelectedClients(new Set(clients.map(c => c.id ?? c._id ?? c.phone ?? c.name)));
   };
+
+  const clearSelection = () => setSelectedClients(new Set());
 
   const parseNumbersInput = (text) => {
-    // Accept JSON array or comma/newline/semicolon separated list.
     if (!text || !text.trim()) return [];
     const trimmed = text.trim();
-
-    // Try JSON parse first
     try {
       const parsed = JSON.parse(trimmed);
       if (Array.isArray(parsed)) return parsed.map(String);
-    } catch (e) {
-      // not JSON, fallthrough
-    }
-
-    // Split on commas, semicolons or newlines
+    } catch (e) { }
     const parts = trimmed.split(/[\n,;]+/);
     return parts.map(p => p.trim()).filter(Boolean);
   };
@@ -146,8 +160,8 @@ export default function Dashboard() {
   const handleSendBroadcast = async (e) => {
     e.preventDefault();
     const numbersArr = parseNumbersInput(numbersText);
-    if (!numbersArr.length) {
-      alert("Please enter numbers (comma or newline separated).");
+    if (!numbersArr.length && selectedClients.size === 0) {
+      alert("Please enter numbers or select clients to send to.");
       return;
     }
     if (!messageText.trim()) {
@@ -159,7 +173,7 @@ export default function Dashboard() {
     setSendResult(null);
 
     try {
-      const payload = { numbers: numbersArr, message: messageText.trim() };
+      const payload = { numbers: numbersArr.length ? numbersArr : Array.from(selectedClients), message: messageText.trim() };
       const res = await axios.post((base ? `${base}` : "") + "/api/messages", payload, { timeout: 60000 });
       setSendResult(res.data);
       if (res.data && res.data.ok) {
@@ -180,7 +194,7 @@ export default function Dashboard() {
     }
   };
 
-  // NEW: send to all clients (fetch /api/clients then broadcast)
+  // Send to all clients (existing behavior)
   const handleSendToAll = async () => {
     if (!confirm("Send this message to ALL clients? Make sure you want to broadcast.")) return;
     setSendAllResult(null);
@@ -193,11 +207,11 @@ export default function Dashboard() {
     setSending(true);
     try {
       const clientsRes = await axios.get((base ? `${base}` : "") + "/api/clients", { timeout: 60000 });
-      let clients = [];
+      let clientsList = [];
       if (clientsRes.data) {
-        clients = clientsRes.data.clients ?? clientsRes.data.data ?? clientsRes.data ?? [];
+        clientsList = clientsRes.data.clients ?? clientsRes.data.data ?? clientsRes.data ?? [];
       }
-      const numbers = Array.isArray(clients) ? clients.map(c => c.phone).filter(Boolean) : [];
+      const numbers = Array.isArray(clientsList) ? clientsList.map(c => c.phone).filter(Boolean) : [];
       if (!numbers.length) {
         alert("No client phone numbers found to send to.");
         setSending(false);
@@ -219,23 +233,39 @@ export default function Dashboard() {
     }
   };
 
+  const handleShowQr = async () => {
+    try {
+      const res = await axios.get((base ? `${base}` : "") + "/api/messages/qr");
+      if (res.data && res.data.qr) {
+        setQrSrc((base ? `${base}` : "") + "/api/messages/qr.png?ts=" + Date.now());
+        setQrVisible(true);
+      } else {
+        alert("No QR available currently.");
+      }
+    } catch (err) {
+      console.error("Failed to fetch QR:", err);
+      alert("Failed to fetch QR from server. Check server logs.");
+    }
+  };
+
+  const closeQrModal = () => {
+    setQrVisible(false);
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-6">
       <h2 className="text-2xl font-semibold mb-4">Dashboard</h2>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="p-4 bg-white rounded-xl shadow-sm border">
-          <div className="text-sm text-gray-500">Total clients</div>
-          <div className="text-3xl font-bold">{loadingSummary ? "..." : (summary?.totalClients ?? "—")}</div>
+          <div className="text-sm text-gray-500">Total clients (selected)</div>
+          <div className="text-3xl font-bold">{selectedClients.size}</div>
         </div>
 
-        <div className="p-4 bg-white rounded-xl shadow-sm border">
-          <div className="text-sm text-gray-500">Messages today</div>
-          <div className="text-3xl font-bold">{loadingSummary ? "..." : (summary?.messagesToday ?? "—")}</div>
-        </div>
+        {/* Removed Messages today and Placeholder cards per request */}
 
         <div className="p-4 bg-white rounded-xl shadow-sm border">
-          <div className="text-sm text-gray-500">Placeholder</div>
-          <div className="text-3xl font-bold">—</div>
+          <div className="text-sm text-gray-500">WhatsApp Status</div>
+          <div className="text-2xl font-medium">{waConnected ? "Connected" : "Not connected"}</div>
         </div>
       </div>
 
@@ -269,7 +299,7 @@ export default function Dashboard() {
 
         <form onSubmit={handleSendBroadcast} className="space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700">Numbers</label>
+            <label className="block text-sm font-medium text-gray-700">Numbers (or leave empty to use selected clients)</label>
             <textarea
               rows={2}
               placeholder={'2547XXXXXXXX,2547YYYYYYYY or JSON array like: ["2547..","2547.."]'}
@@ -297,7 +327,7 @@ export default function Dashboard() {
               disabled={sending}
               className={`px-4 py-2 rounded text-white ${sending ? "bg-gray-400" : "bg-green-600 hover:bg-green-700"}`}
             >
-              {sending ? "Sending..." : "Send Broadcast"}
+              {sending ? "Sending..." : "Send"}
             </button>
 
             <button
@@ -334,9 +364,60 @@ export default function Dashboard() {
         </form>
       </div>
 
-      <div className="mt-6 bg-white rounded-xl p-6 shadow-sm border">
-        <h3 className="text-lg font-semibold mb-2">Recent activity</h3>
-        <p className="text-sm text-gray-500">No recent activity yet.</p>
+      {/* Clients list with checkboxes */}
+      <div className="bg-white rounded-xl p-6 shadow-sm border">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold">Clients (select recipients)</h3>
+          <div className="flex gap-2">
+            <button onClick={selectAllClients} className="px-3 py-1 border rounded">Select all</button>
+            <button onClick={clearSelection} className="px-3 py-1 border rounded">Clear</button>
+            <button
+              onClick={() => {
+                // assemble numbers and prefill numbers textarea for convenience
+                const nums = clients.map(c => c.phone).filter(Boolean);
+                setNumbersText(nums.join(","));
+                alert("Phone numbers copied into Numbers box. You can edit before sending.");
+              }}
+              className="px-3 py-1 border rounded"
+            >
+              Load numbers into field
+            </button>
+          </div>
+        </div>
+
+        {clientsLoading ? (
+          <div>Loading clients...</div>
+        ) : (
+          <div className="max-h-64 overflow-auto border rounded">
+            <table className="w-full text-left">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-2">#</th>
+                  <th className="px-3 py-2"></th>
+                  <th className="px-3 py-2">Name</th>
+                  <th className="px-3 py-2">Phone</th>
+                  <th className="px-3 py-2">Area</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clients.map((c, i) => {
+                  const id = c.id ?? c._id ?? `${c.phone}-${i}`;
+                  return (
+                    <tr key={id} className="border-t">
+                      <td className="px-3 py-2">{i+1}</td>
+                      <td className="px-3 py-2">
+                        <input type="checkbox" checked={selectedClients.has(id)} onChange={() => handleToggleClient(id)} />
+                      </td>
+                      <td className="px-3 py-2">{c.name}</td>
+                      <td className="px-3 py-2">{c.phone}</td>
+                      <td className="px-3 py-2">{c.area}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {qrVisible && (

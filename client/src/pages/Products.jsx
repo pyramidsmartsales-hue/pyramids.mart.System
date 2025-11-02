@@ -3,7 +3,7 @@ import React, { useEffect, useState } from "react";
 
 /**
  * Products page (client-side only)
- * Uses VITE_API_URL for backend base url.
+ * Added supplier column and supplier field in add/edit form.
  */
 
 const API = import.meta.env.VITE_API_URL || "";
@@ -26,6 +26,7 @@ function ProductRow({ p, onEdit, onDelete }) {
       <td className="px-3 py-2 border-b">{p.unit}</td>
       <td className="px-3 py-2 border-b">{p.price}</td>
       <td className="px-3 py-2 border-b">{p.qty}</td>
+      <td className="px-3 py-2 border-b">{p.supplier ?? "-"}</td>
       <td className="px-3 py-2 border-b">{p.expiry || "-"}</td>
       <td className="px-3 py-2 border-b">
         <div className="flex gap-2">
@@ -42,7 +43,7 @@ export default function Products() {
   const [loading, setLoading] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: "", barcode: "", category: "", price: "", unit: "", qty: 0, expiry: "" });
+  const [form, setForm] = useState({ name: "", barcode: "", category: "", price: "", unit: "", qty: 0, expiry: "", supplier: "" });
   const [file, setFile] = useState(null);
   const [message, setMessage] = useState(null);
 
@@ -69,14 +70,14 @@ export default function Products() {
 
   function openAdd() {
     setEditing(null);
-    setForm({ name: "", barcode: "", category: "", price: "", unit: "", qty: 0, expiry: "" });
+    setForm({ name: "", barcode: "", category: "", price: "", unit: "", qty: 0, expiry: "", supplier: "" });
     setFile(null);
     setFormOpen(true);
   }
 
   function openEdit(p) {
     setEditing(p);
-    setForm({ name: p.name || "", barcode: p.barcode || "", category: p.category || "", price: p.price || "", unit: p.unit || "", qty: p.qty || 0, expiry: p.expiry || "" });
+    setForm({ name: p.name || "", barcode: p.barcode || "", category: p.category || "", price: p.price || "", unit: p.unit || "", qty: p.qty || 0, expiry: p.expiry || "", supplier: p.supplier || "" });
     setFormOpen(true);
   }
 
@@ -177,13 +178,14 @@ export default function Products() {
               <th className="px-3 py-2">Unit</th>
               <th className="px-3 py-2">Price</th>
               <th className="px-3 py-2">Stock</th>
+              <th className="px-3 py-2">Supplier</th>
               <th className="px-3 py-2">Expiry</th>
               <th className="px-3 py-2">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan="8" className="p-4 text-center">Loading...</td></tr>}
-            {!loading && products.length === 0 && <tr><td colSpan="8" className="p-4 text-center">No products</td></tr>}
+            {loading && <tr><td colSpan="9" className="p-4 text-center">Loading...</td></tr>}
+            {!loading && products.length === 0 && <tr><td colSpan="9" className="p-4 text-center">No products</td></tr>}
             {!loading && products.map(p => <ProductRow key={p.id} p={p} onEdit={openEdit} onDelete={deleteProduct} />)}
           </tbody>
         </table>
@@ -200,6 +202,7 @@ export default function Products() {
               <SmallInput label="Unit" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} />
               <SmallInput label="Price" type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
               <SmallInput label="Qty" type="number" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
+              <SmallInput label="Supplier" value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} />
               <SmallInput label="Expiry (YYYY-MM-DD)" value={form.expiry} onChange={(e) => setForm({ ...form, expiry: e.target.value })} />
               <div className="flex flex-col">
                 <label className="text-sm text-gray-600">Image</label>

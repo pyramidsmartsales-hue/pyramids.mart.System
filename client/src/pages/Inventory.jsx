@@ -38,6 +38,7 @@ export default function Inventory() {
             <tr>
               <th className="px-3 py-2">Product</th>
               <th className="px-3 py-2">Barcode</th>
+              <th className="px-3 py-2">Supplier</th>
               <th className="px-3 py-2">Branch</th>
               <th className="px-3 py-2">Stock</th>
               <th className="px-3 py-2">Expected</th>
@@ -45,12 +46,13 @@ export default function Inventory() {
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan="6" className="p-4 text-center">Loading...</td></tr>}
-            {!loading && items.length === 0 && <tr><td colSpan="6" className="p-4 text-center">No inventory data</td></tr>}
+            {loading && <tr><td colSpan="7" className="p-4 text-center">Loading...</td></tr>}
+            {!loading && items.length === 0 && <tr><td colSpan="7" className="p-4 text-center">No inventory data</td></tr>}
             {!loading && items.map((it) => (
               <tr key={`${it.productId}-${it.branch}`}>
                 <td className="px-3 py-2 border-b">{it.productName}</td>
                 <td className="px-3 py-2 border-b">{it.barcode}</td>
+                <td className="px-3 py-2 border-b">{it.supplier ?? "-"}</td>
                 <td className="px-3 py-2 border-b">{it.branch}</td>
                 <td className="px-3 py-2 border-b">{it.stock}</td>
                 <td className="px-3 py-2 border-b">{it.expected}</td>

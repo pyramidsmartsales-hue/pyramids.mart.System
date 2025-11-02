@@ -12,7 +12,8 @@ import inventoryRouter from "./routes/inventory.js";
 import salesRouter from "./routes/sales.js";
 import suppliersRouter from "./routes/suppliers.js";
 import purchasesRouter from "./routes/purchases.js";
-import messagesRouter from "./routes/messages.js"; // ✅ أُضيف هذا السطر
+import messagesRouter from "./routes/messages.js";
+import clientsRouter from "./routes/clients.js";
 
 dotenv.config();
 
@@ -21,7 +22,7 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(morgan("dev"));
 
-// ✅ المسارات
+// routes
 app.use("/api/whatsapp", whatsappRouter);
 app.use("/api/overview", overviewRouter);
 app.use("/api/products", productsRouter);
@@ -29,9 +30,10 @@ app.use("/api/inventory", inventoryRouter);
 app.use("/api/sales", salesRouter);
 app.use("/api/suppliers", suppliersRouter);
 app.use("/api/purchases", purchasesRouter);
-app.use("/api/messages", messagesRouter); // ✅ أُضيف هذا السطر
+app.use("/api/messages", messagesRouter);
+app.use("/api/clients", clientsRouter);
 
-// مسار اختبار أساسي
+// health
 app.get("/", (req, res) => {
   res.send("PyramidsMart Server Running ✅");
 });
@@ -41,12 +43,18 @@ const io = new Server(server, {
   cors: { origin: "*" },
 });
 
-// WebSocket events
+// WebSocket events (minimal)
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
-
   socket.on("disconnect", () => {
     console.log("Client disconnected:", socket.id);
+  });
+
+  // optional: simple whatsapp status emit mock
+  socket.on("whatsapp:status", (cb) => {
+    try {
+      if (typeof cb === "function") cb({ connected: false });
+    } catch (e) { /* ignore */ }
   });
 });
 

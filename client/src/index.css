@@ -1,3 +1,4 @@
+/* client/src/index.css */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
 
 @tailwind base;
@@ -9,9 +10,18 @@
   --bg: #F7FAFC; /* light */
   --card: #FFFFFF;
   --muted: #6B7280;
-  --primary: #0EA5A4;
-  --accent: #7C3AED;
+
+  /* Updated palette to match store / logo (suggested):
+     Primary: deep green for brand
+     Accent: warm gold for highlights
+  */
+  --primary: #1E6F4B; /* deep green */
+  --accent: #FFC857;  /* warm gold */
 }
+
+/* helper classes for quick usage */
+.bg-primary { background-color: var(--primary) !important; color: white !important; }
+.text-accent { color: var(--accent) !important; }
 
 html, body, #root { height: 100%; }
 body {
