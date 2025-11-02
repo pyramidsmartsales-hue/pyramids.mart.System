@@ -70,8 +70,9 @@ router.put("/:id", async (req, res) => {
       barcode: barcode ?? DATA.PRODUCTS[idx].barcode,
       category: category ?? DATA.PRODUCTS[idx].category,
       unit: unit ?? DATA.PRODUCTS[idx].unit,
-      price: Number(price ?? DATA.PRODUCTS[idx].price || 0),
-      qty: Number(qty ?? DATA.PRODUCTS[idx].qty || 0),
+      // use parentheses to avoid precedence issues between ?? and ||
+      price: Number((price ?? DATA.PRODUCTS[idx].price) || 0),
+      qty: Number((qty ?? DATA.PRODUCTS[idx].qty) || 0),
       expiry: expiry ?? DATA.PRODUCTS[idx].expiry,
       supplier: supplier ?? DATA.PRODUCTS[idx].supplier
     };
@@ -105,51 +106,32 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-/**
- * POST /api/products/from-sheet
- * Accept product create/update from Google Sheets
- * body: { action: 'create'|'update', row: { id?, name, barcode, unit, price, qty, expiry, supplier } }
- */
-router.post("/from-sheet", async (req, res) => {
+router.post("/:id/image", async (req, res) => {
+  res.status(501).json({
+    error: "Image upload not enabled on server.",
+    hint: "Install 'multer' and update server/routes/products.js to handle multipart/form-data."
+  });
+});
+
+router.post("/import", async (req, res) => {
+  res.status(501).json({
+    error: "Import not enabled on server.",
+    hint: "Install 'multer' and 'exceljs' then update this route to parse and insert rows."
+  });
+});
+
+router.get("/export", async (req, res) => {
   try {
-    const { action, row } = req.body || {};
-    if (!row || !row.name) return res.status(400).json({ error: "row.name required" });
-
-    if (action === "create") {
-      const product = {
-        id: DATA.NEXT_PRODUCT_ID++,
-        name: row.name,
-        barcode: row.barcode || "",
-        category: row.category || "",
-        unit: row.unit || "",
-        price: Number(row.price || 0),
-        qty: Number(row.qty || 0),
-        expiry: row.expiry || null,
-        supplier: row.supplier || null
-      };
-      DATA.PRODUCTS.push(product);
-      return res.json({ ok: true, created: product });
-    } else if (action === "update") {
-      // try to find by barcode or id or name
-      let found = null;
-      if (row.barcode) found = DATA.PRODUCTS.find(p => p.barcode === row.barcode);
-      if (!found && row.id) found = DATA.PRODUCTS.find(p => p.id === Number(row.id));
-      if (!found && row.name) found = DATA.PRODUCTS.find(p => p.name === row.name);
-      if (!found) return res.status(404).json({ error: "product not found to update" });
-
-      found.name = row.name ?? found.name;
-      found.barcode = row.barcode ?? found.barcode;
-      found.unit = row.unit ?? found.unit;
-      found.price = Number(row.price ?? found.price || 0);
-      found.qty = Number(row.qty ?? found.qty || 0);
-      found.expiry = row.expiry ?? found.expiry;
-      found.supplier = row.supplier ?? found.supplier;
-      return res.json({ ok: true, updated: found });
-    } else {
-      return res.status(400).json({ error: "unknown action" });
-    }
+    const header = "id,name,barcode,category,unit,price,qty,expiry,supplier\n";
+    const rows = DATA.PRODUCTS.map(p =>
+      `${p.id},"${(p.name || "").replace(/"/g, '""')}",${p.barcode || ""},${p.category || ""},${p.unit || ""},${p.price || 0},${p.qty || 0},${p.expiry || ""},${p.supplier || ""}`
+    ).join("\n");
+    const csv = header + rows;
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="products_export_${Date.now()}.csv"`);
+    res.send(csv);
   } catch (err) {
-    console.error("products:from-sheet error", err);
+    console.error("products:export error", err);
     res.status(500).json({ error: "server error" });
   }
 });
