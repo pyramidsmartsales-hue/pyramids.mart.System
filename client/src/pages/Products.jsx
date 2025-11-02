@@ -1,141 +1,218 @@
-// server/routes/products.js
-import express from "express";
-import path from "path";
-import fs from "fs";
-
-const router = express.Router();
+// client/src/pages/Products.jsx
+import React, { useEffect, useState } from "react";
 
 /**
- * Safe products router (mock)
- * - GET /api/products
- * - POST /api/products
- * - PUT /api/products/:id
- * - DELETE /api/products/:id
- * - POST /api/products/:id/image   (stub -> returns 501 if multer not installed)
- * - POST /api/products/import     (stub -> returns 501 if multer not installed)
- * - GET /api/products/export      (returns CSV from mock)
- *
- * This implementation purposefully does NOT require 'multer' or other native upload libs
- * to avoid introducing runtime dependency that could break the server if not installed.
- *
- * When ready to enable uploads/import, install multer and replace the stubs.
+ * Products page (client-side only)
+ * - This file contains only browser-compatible code (no `fs`, `path`, `express`, etc.)
+ * - It talks to backend endpoints under /api/products
  */
 
-// ===== In-memory mock DB (safe default) =====
-let MOCK_PRODUCTS = [
-  { id: 1, name: "Rice 5kg", barcode: "1234567890123", category: "Groceries", price: 25.5, unit: "bag", qty: 50, expiry: null, image: null },
-  { id: 2, name: "Milk 1L", barcode: "9876543210987", category: "Dairy", price: 1.5, unit: "bottle", qty: 120, expiry: "2025-12-01", image: null }
-];
-let NEXT_ID = MOCK_PRODUCTS.length + 1;
-
-// Ensure uploads dir exists (for potential future files)
-const uploadsDir = path.join(process.cwd(), "uploads", "products");
-try {
-  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-} catch (e) {
-  console.warn("Could not ensure uploads/products directory:", e && e.message ? e.message : e);
+function SmallInput({ label, value, onChange, type = "text" }) {
+  return (
+    <div className="flex flex-col">
+      <label className="text-sm text-gray-600">{label}</label>
+      <input type={type} value={value} onChange={onChange} className="border rounded px-2 py-1 mt-1" />
+    </div>
+  );
 }
 
-// GET /api/products
-router.get("/", async (req, res) => {
-  try {
-    res.json({ products: MOCK_PRODUCTS });
-  } catch (err) {
-    console.error("products:list error", err);
-    res.status(500).json({ error: "server error" });
+function ProductRow({ p, onEdit, onDelete }) {
+  return (
+    <tr>
+      <td className="px-3 py-2 border-b">{p.name}</td>
+      <td className="px-3 py-2 border-b">{p.barcode}</td>
+      <td className="px-3 py-2 border-b">{p.category}</td>
+      <td className="px-3 py-2 border-b">{p.unit}</td>
+      <td className="px-3 py-2 border-b">{p.price}</td>
+      <td className="px-3 py-2 border-b">{p.qty}</td>
+      <td className="px-3 py-2 border-b">{p.expiry || "-"}</td>
+      <td className="px-3 py-2 border-b">
+        <div className="flex gap-2">
+          <button onClick={() => onEdit(p)} className="px-2 py-1 bg-yellow-100 rounded">Edit</button>
+          <button onClick={() => onDelete(p)} className="px-2 py-1 bg-red-100 rounded">Delete</button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+export default function Products() {
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ name: "", barcode: "", category: "", price: "", unit: "", qty: 0, expiry: "" });
+  const [file, setFile] = useState(null);
+  const [message, setMessage] = useState(null);
+
+  useEffect(() => {
+    fetchProducts();
+    // eslint-disable-next-line
+  }, []);
+
+  async function fetchProducts() {
+    setLoading(true); setMessage(null);
+    try {
+      const res = await fetch("/api/products");
+      if (!res.ok) throw new Error("Failed to fetch products");
+      const json = await res.json();
+      setProducts(json.products ?? []);
+    } catch (err) {
+      console.error(err);
+      setMessage("Cannot load products (server may be mock).");
+      setProducts([]);
+    } finally {
+      setLoading(false);
+    }
   }
-});
 
-// POST /api/products
-router.post("/", async (req, res) => {
-  try {
-    const { name, barcode, category, price, unit, qty, expiry } = req.body;
-    if (!name) return res.status(400).json({ error: "name required" });
-
-    const product = { id: NEXT_ID++, name, barcode, category, price, unit, qty, expiry, image: null };
-    MOCK_PRODUCTS.push(product);
-
-    res.status(201).json({ product });
-  } catch (err) {
-    console.error("products:create error", err);
-    res.status(500).json({ error: "server error" });
+  function openAdd() {
+    setEditing(null);
+    setForm({ name: "", barcode: "", category: "", price: "", unit: "", qty: 0, expiry: "" });
+    setFile(null);
+    setFormOpen(true);
   }
-});
 
-// PUT /api/products/:id
-router.put("/:id", async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const idx = MOCK_PRODUCTS.findIndex(p => p.id === id);
-    if (idx === -1) return res.status(404).json({ error: "not found" });
-
-    const { name, barcode, category, price, unit, qty, expiry } = req.body;
-    const updated = { ...MOCK_PRODUCTS[idx], name, barcode, category, price, unit, qty, expiry };
-    MOCK_PRODUCTS[idx] = updated;
-
-    res.json({ product: updated });
-  } catch (err) {
-    console.error("products:update error", err);
-    res.status(500).json({ error: "server error" });
+  function openEdit(p) {
+    setEditing(p);
+    setForm({ name: p.name || "", barcode: p.barcode || "", category: p.category || "", price: p.price || "", unit: p.unit || "", qty: p.qty || 0, expiry: p.expiry || "" });
+    setFormOpen(true);
   }
-});
 
-// DELETE /api/products/:id
-router.delete("/:id", async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const idx = MOCK_PRODUCTS.findIndex(p => p.id === id);
-    if (idx === -1) return res.status(404).json({ error: "not found" });
-    MOCK_PRODUCTS.splice(idx, 1);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("products:delete error", err);
-    res.status(500).json({ error: "server error" });
+  async function saveProduct(e) {
+    e.preventDefault();
+    setMessage(null);
+    try {
+      const payload = { ...form, qty: Number(form.qty), price: Number(form.price) };
+      let res;
+      if (editing && editing.id) {
+        res = await fetch(`/api/products/${editing.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+      } else {
+        res = await fetch("/api/products", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+      }
+      if (!res.ok) throw new Error("Save failed");
+      const json = await res.json();
+      // upload image if server supports it
+      if (file && json.product && json.product.id) {
+        const fd = new FormData();
+        fd.append("image", file);
+        await fetch(`/api/products/${json.product.id}/image`, { method: "POST", body: fd });
+      }
+      setFormOpen(false);
+      fetchProducts();
+    } catch (err) {
+      console.error(err);
+      setMessage("Failed to save product");
+    }
   }
-});
 
-/**
- * POST /api/products/:id/image
- * Stub: If you want actual file upload support, install multer and update this route.
- * For now we intentionally do NOT parse multipart to avoid requiring multer at runtime.
- */
-router.post("/:id/image", async (req, res) => {
-  // Inform the user/admin how to enable uploads without breaking the server.
-  res.status(501).json({
-    error: "Image upload not enabled on server.",
-    hint: "Install 'multer' and update server/routes/products.js to handle multipart/form-data."
-  });
-});
-
-/**
- * POST /api/products/import
- * Stub for Excel/CSV import. To enable: install 'multer' and 'exceljs' and parse req.file.
- */
-router.post("/import", async (req, res) => {
-  res.status(501).json({
-    error: "Import not enabled on server.",
-    hint: "Install 'multer' and 'exceljs' then update this route to parse and insert rows."
-  });
-});
-
-/**
- * GET /api/products/export
- * Returns a CSV constructed from the mock dataset for download.
- */
-router.get("/export", async (req, res) => {
-  try {
-    const header = "id,name,barcode,category,unit,price,qty,expiry\n";
-    const rows = MOCK_PRODUCTS.map(p =>
-      `${p.id},"${(p.name || "").replace(/"/g, '""')}",${p.barcode || ""},${p.category || ""},${p.unit || ""},${p.price || 0},${p.qty || 0},${p.expiry || ""}`
-    ).join("\n");
-    const csv = header + rows;
-    res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", `attachment; filename="products_export_${Date.now()}.csv"`);
-    res.send(csv);
-  } catch (err) {
-    console.error("products:export error", err);
-    res.status(500).json({ error: "server error" });
+  async function deleteProduct(p) {
+    if (!confirm(`Delete product "${p.name}"?`)) return;
+    try {
+      const res = await fetch(`/api/products/${p.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Delete failed");
+      fetchProducts();
+    } catch (err) {
+      console.error(err);
+      setMessage("Failed to delete product");
+    }
   }
-});
 
-export default router;
+  async function handleImport(e) {
+    const input = e.target;
+    if (!input.files || !input.files[0]) return;
+    const f = input.files[0];
+    const fd = new FormData();
+    fd.append("file", f);
+    try {
+      const res = await fetch("/api/products/import", { method: "POST", body: fd });
+      if (!res.ok) throw new Error("Import failed");
+      await res.json();
+      setMessage("Import completed (check server).");
+      fetchProducts();
+    } catch (err) {
+      console.error(err);
+      setMessage("Import failed");
+    } finally {
+      input.value = "";
+    }
+  }
+
+  function exportProducts() {
+    window.location.href = "/api/products/export";
+  }
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Products Management</h1>
+        <div className="flex items-center gap-3">
+          <button onClick={openAdd} className="bg-green-600 text-white px-4 py-2 rounded">Add Product</button>
+          <label className="px-3 py-2 border rounded cursor-pointer bg-white">
+            Import (Excel)
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} className="hidden" />
+          </label>
+          <button onClick={exportProducts} className="px-3 py-2 border rounded">Export</button>
+        </div>
+      </div>
+
+      {message && <div className="text-sm text-red-600">{message}</div>}
+
+      <div className="bg-white rounded-lg shadow overflow-auto">
+        <table className="w-full text-left">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-3 py-2">Name</th>
+              <th className="px-3 py-2">Barcode</th>
+              <th className="px-3 py-2">Category</th>
+              <th className="px-3 py-2">Unit</th>
+              <th className="px-3 py-2">Price</th>
+              <th className="px-3 py-2">Stock</th>
+              <th className="px-3 py-2">Expiry</th>
+              <th className="px-3 py-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan="8" className="p-4 text-center">Loading...</td></tr>}
+            {!loading && products.length === 0 && <tr><td colSpan="8" className="p-4 text-center">No products</td></tr>}
+            {!loading && products.map(p => <ProductRow key={p.id} p={p} onEdit={openEdit} onDelete={deleteProduct} />)}
+          </tbody>
+        </table>
+      </div>
+
+      {formOpen && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black/40 p-4 z-50">
+          <div className="bg-white rounded-lg shadow p-6 w-full max-w-2xl">
+            <h2 className="text-lg font-semibold mb-4">{editing ? "Edit Product" : "Add Product"}</h2>
+            <form onSubmit={saveProduct} className="grid grid-cols-2 gap-4">
+              <SmallInput label="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              <SmallInput label="Barcode" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} />
+              <SmallInput label="Category" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
+              <SmallInput label="Unit" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} />
+              <SmallInput label="Price" type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
+              <SmallInput label="Qty" type="number" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
+              <SmallInput label="Expiry (YYYY-MM-DD)" value={form.expiry} onChange={(e) => setForm({ ...form, expiry: e.target.value })} />
+              <div className="flex flex-col">
+                <label className="text-sm text-gray-600">Image</label>
+                <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files && e.target.files[0])} />
+              </div>
+
+              <div className="col-span-2 flex justify-end gap-2 mt-2">
+                <button type="button" onClick={() => setFormOpen(false)} className="px-4 py-2 border rounded">Cancel</button>
+                <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded">Save</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
