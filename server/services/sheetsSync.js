@@ -4,10 +4,10 @@
  *
  * Requires env:
  *  - GOOGLE_SERVICE_ACCOUNT_EMAIL
- *  - GOOGLE_PRIVATE_KEY  (use \n or newline string)
+ *  - GOOGLE_PRIVATE_KEY  (use \n or literal newline)
  *  - GOOGLE_SHEETS_ID
  *
- * Also: the service account must have edit access to the sheet (share the sheet with the service account email).
+ * The service account must have edit access to the sheet (share the sheet with the service account email).
  */
 
 import { google } from "googleapis";
@@ -17,23 +17,47 @@ const SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
 function getAuthClient() {
   const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let privateKey = process.env.GOOGLE_PRIVATE_KEY || "";
+
   if (!clientEmail || !privateKey) {
-    throw new Error("Google service account credentials not set in env (GOOGLE_SERVICE_ACCOUNT_EMAIL/GOOGLE_PRIVATE_KEY)");
+    throw new Error(
+      "Google service account credentials not set in env (GOOGLE_SERVICE_ACCOUNT_EMAIL/GOOGLE_PRIVATE_KEY)"
+    );
   }
-  // private key from env may contain literal \n; convert
+
+  // If the private key was stored with literal '\n' sequences, convert them to real newlines
   privateKey = privateKey.replace(/\\n/g, "\n");
-  const jwtClient = new google.auth.JWT(clientEmail, null, privateKey, SCOPES);
+
+  const jwtClient = new google.auth.JWT({
+    email: clientEmail,
+    key: privateKey,
+    scopes: SCOPES,
+  });
+
   return jwtClient;
 }
 
-function getSheetsClient() {
-  const auth = getAuthClient();
+async function ensureAuth() {
+  const jwt = getAuthClient();
+  try {
+    // attempt to authorize and throw detailed error if it fails
+    await jwt.authorize();
+    // attach token to auth client for subsequent requests (google client will use it)
+    return jwt;
+  } catch (err) {
+    console.error("Google JWT auth error:", err && err.message ? err.message : err);
+    throw new Error(`Google auth failed: ${err && err.message ? err.message : err}`);
+  }
+}
+
+async function getSheetsClient() {
+  const auth = await ensureAuth();
   return google.sheets({ version: "v4", auth });
 }
 
 /* --- Basic helpers --- */
+
 export async function appendRow(sheetName, rowArray) {
-  const sheets = getSheetsClient();
+  const sheets = await getSheetsClient();
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   if (!spreadsheetId) throw new Error("GOOGLE_SHEETS_ID not set");
   const res = await sheets.spreadsheets.values.append({
@@ -41,20 +65,20 @@ export async function appendRow(sheetName, rowArray) {
     range: `'${sheetName}'!A:A`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [rowArray] }
+    requestBody: { values: [rowArray] },
   });
   return res.data;
 }
 
 export async function readSheet(sheetName) {
-  const sheets = getSheetsClient();
+  const sheets = await getSheetsClient();
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   if (!spreadsheetId) throw new Error("GOOGLE_SHEETS_ID not set");
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `'${sheetName}'`
+    range: `'${sheetName}'`,
   });
-  return (res.data.values || []);
+  return res.data.values || [];
 }
 
 /**
@@ -74,7 +98,7 @@ export async function findRowIndex(sheetName, keyColIndex, value) {
 
 /** update entire row (replace) at rowIndex (1-based) */
 export async function updateRow(sheetName, rowIndex, valuesArray) {
-  const sheets = getSheetsClient();
+  const sheets = await getSheetsClient();
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   if (!spreadsheetId) throw new Error("GOOGLE_SHEETS_ID not set");
   const range = `'${sheetName}'!A${rowIndex}`;
@@ -82,14 +106,16 @@ export async function updateRow(sheetName, rowIndex, valuesArray) {
     spreadsheetId,
     range,
     valueInputOption: "RAW",
-    requestBody: { values: [valuesArray] }
+    requestBody: { values: [valuesArray] },
   });
   return res.data;
 }
 
 /* --- High-level entity sync helpers --- */
 
-function safe(v){ return v === null || v === undefined ? "" : v.toString(); }
+function safe(v) {
+  return v === null || v === undefined ? "" : v.toString();
+}
 
 export async function syncClientToSheet(clientObj) {
   const sheet = "Clients";
@@ -110,7 +136,7 @@ export async function syncClientToSheet(clientObj) {
     safe(clientObj.phone || ""),
     safe(clientObj.notes || ""),
     safe(clientObj.area || ""),
-    safe(clientObj.points || 0)
+    safe(clientObj.points || 0),
   ];
 
   if (rowIndex) {
@@ -137,7 +163,7 @@ export async function syncProductToSheet(prod) {
     safe(prod.price || 0),
     safe(prod.qty || prod.stock || 0),
     safe(prod.expiry || ""),
-    safe(prod.supplier || "")
+    safe(prod.supplier || ""),
   ];
 
   if (rowIndex) {
@@ -161,7 +187,7 @@ export async function syncSupplierToSheet(sup) {
     safe(sup.phone || ""),
     safe(sup.company || ""),
     safe(sup.balance || 0),
-    safe(Array.isArray(sup.products) ? sup.products.join("|") : (sup.products || ""))
+    safe(Array.isArray(sup.products) ? sup.products.join("|") : sup.products || ""),
   ];
 
   if (rowIndex) {
@@ -183,7 +209,7 @@ export async function syncPurchaseToSheet(purchase) {
     safe(purchase.supplier || ""),
     safe(purchase.date || ""),
     safe(purchase.total || 0),
-    safe(JSON.stringify(purchase.items || []))
+    safe(JSON.stringify(purchase.items || [])),
   ];
   if (rowIndex) {
     await updateRow(sheet, rowIndex, row);
@@ -206,7 +232,7 @@ export async function syncSaleToSheet(sale) {
     safe(JSON.stringify(sale.items || [])),
     safe(sale.total || 0),
     safe(sale.payment_method || ""),
-    safe(sale.points_used || 0)
+    safe(sale.points_used || 0),
   ];
   if (rowIndex) {
     await updateRow(sheet, rowIndex, row);
