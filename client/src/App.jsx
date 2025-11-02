@@ -1,4 +1,4 @@
-// src/App.jsx
+// client/src/App.jsx
 import React, { useEffect, useState } from "react";
 import socket from "./services/socket";
 import Sidebar from "./components/Sidebar";
@@ -11,11 +11,11 @@ import Analytics from "./pages/Analytics";
 import QRModal from "./components/QRModal";
 import Overview from "./pages/Overview";
 import Products from "./pages/Products";
+import Inventory from "./pages/Inventory";
+import Sales from "./pages/Sales";
+import Suppliers from "./pages/Suppliers";
+import Purchases from "./pages/Purchases";
 
-/**
- * Named export SocketContext is required by some pages (Messages.jsx etc).
- * We export it so imports like `import { SocketContext } from "../App";` work.
- */
 export const SocketContext = React.createContext(socket);
 
 export default function App() {
@@ -24,20 +24,11 @@ export default function App() {
   const [route, setRoute] = useState("dashboard");
 
   useEffect(() => {
-    // whatsapp / socket events
     socket.on("wa:qr", (q) => setQr(q));
     socket.on("wa:ready", () => { setConnected(true); setQr(null); });
     socket.on("wa:disconnected", () => setConnected(false));
-
-    // socket lifecycle
-    socket.on("connect", () => {
-      console.log("socket connected (client):", socket.id);
-      setConnected(true);
-    });
-    socket.on("disconnect", () => {
-      console.log("socket disconnected (client)");
-      setConnected(false);
-    });
+    socket.on("connect", () => { console.log("socket connected (client):", socket.id); setConnected(true); });
+    socket.on("disconnect", () => { console.log("socket disconnected (client)"); setConnected(false); });
 
     return () => {
       socket.off("wa:qr");
@@ -62,6 +53,10 @@ export default function App() {
             {route === "dashboard" && <Dashboard />}
             {route === "overview" && <Overview />}
             {route === "products" && <Products />}
+            {route === "inventory" && <Inventory />}
+            {route === "sales" && <Sales />}
+            {route === "suppliers" && <Suppliers />}
+            {route === "purchases" && <Purchases />}
             {route === "clients" && <Clients />}
             {route === "messages" && <Messages />}
             {route === "templates" && <Templates />}
@@ -72,5 +67,5 @@ export default function App() {
         <QRModal qr={qr} onClose={() => setQr(null)} />
       </div>
     </SocketContext.Provider>
-  );
+);
 }
