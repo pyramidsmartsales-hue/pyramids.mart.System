@@ -1,6 +1,8 @@
 // client/src/pages/Suppliers.jsx
 import React, { useEffect, useState } from "react";
 
+const API = import.meta.env.VITE_API_URL || "";
+
 export default function Suppliers() {
   const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -11,7 +13,7 @@ export default function Suppliers() {
   async function fetchSuppliers() {
     setLoading(true); setMessage(null);
     try {
-      const res = await fetch("/api/suppliers");
+      const res = await fetch(`${API}/api/suppliers`);
       const json = await res.json();
       setSuppliers(json.suppliers || []);
     } catch (err) {

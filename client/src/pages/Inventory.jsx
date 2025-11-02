@@ -1,6 +1,8 @@
 // client/src/pages/Inventory.jsx
 import React, { useEffect, useState } from "react";
 
+const API = import.meta.env.VITE_API_URL || "";
+
 export default function Inventory() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -11,7 +13,7 @@ export default function Inventory() {
   async function fetchItems() {
     setLoading(true); setMessage(null);
     try {
-      const res = await fetch("/api/inventory");
+      const res = await fetch(`${API}/api/inventory`);
       if (!res.ok) throw new Error("Failed");
       const json = await res.json();
       setItems(json.items || []);

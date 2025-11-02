@@ -1,6 +1,8 @@
 // client/src/pages/Purchases.jsx
 import React, { useEffect, useState } from "react";
 
+const API = import.meta.env.VITE_API_URL || "";
+
 export default function Purchases() {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -10,11 +12,13 @@ export default function Purchases() {
   async function fetchInvoices() {
     setLoading(true);
     try {
-      const res = await fetch("/api/purchases");
+      const res = await fetch(`${API}/api/purchases`);
+      if (!res.ok) throw new Error("Failed");
       const json = await res.json();
       setInvoices(json.invoices || []);
     } catch (err) {
       console.error(err);
+      setInvoices([]);
     } finally { setLoading(false); }
   }
 

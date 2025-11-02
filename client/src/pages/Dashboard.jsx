@@ -1,23 +1,17 @@
+// client/src/pages/Dashboard.jsx
 import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { io } from "socket.io-client";
 
 /**
- * Dashboard component
- * - Show QR button + modal (requests /api/messages/qr.png)
- * - status icon (polls /api/messages/status on load and listens to socket events)
- * - Send Broadcast form: numbers (CSV or JSON array) + message -> POST /api/messages
- *
- * Assumes VITE_API_URL is set in environment (e.g. https://pyramids-mart-system.onrender.com)
- * If VITE_API_URL is empty, it will use the same origin.
+ * Dashboard component (uses VITE_API_URL)
+ * Fixed parseNumbersInput to avoid tokenizer issues and avoid template backticks.
  */
 
 export default function Dashboard() {
-  // analytics summary kept from original
   const [summary, setSummary] = useState(null);
   const [loadingSummary, setLoadingSummary] = useState(true);
 
-  // whatsapp states
   const [waConnected, setWaConnected] = useState(false);
   const [qrVisible, setQrVisible] = useState(false);
   const [qrSrc, setQrSrc] = useState("");
@@ -25,17 +19,13 @@ export default function Dashboard() {
   const [sendResult, setSendResult] = useState(null);
 
   const [messageText, setMessageText] = useState("");
-  const [numbersText, setNumbersText] = useState(""); // comma separated or JSON array
+  const [numbersText, setNumbersText] = useState("");
 
-  // socket ref to avoid reconnect loops
   const socketRef = useRef(null);
-
-  // base API url from env
   const base = import.meta.env.VITE_API_URL || "";
 
-  // load analytics summary (original code)
   useEffect(() => {
-    const url = `${base}/api/analytics/summary`;
+    const url = base ? `${base}/api/analytics/summary` : "/api/analytics/summary";
     let mounted = true;
     setLoadingSummary(true);
     axios.get(url)
@@ -46,16 +36,12 @@ export default function Dashboard() {
     return () => { mounted = false; };
   }, [base]);
 
-  // initialize socket and status on mount
   useEffect(() => {
-    // connect socket.io (use base if provided, otherwise same origin)
     const socketUrl = base || undefined;
     const socket = io(socketUrl, { autoConnect: true });
     socketRef.current = socket;
 
-    // socket event handlers
     socket.on("connect", () => {
-      // request immediate status (optional)
       socket.emit("whatsapp:status", (res) => {
         if (res && typeof res.connected !== "undefined") setWaConnected(!!res.connected);
       });
@@ -66,20 +52,17 @@ export default function Dashboard() {
     socket.on("whatsapp:disconnected", () => setWaConnected(false));
     socket.on("whatsapp:auth_failure", () => setWaConnected(false));
 
-    // when server emits QR text, request PNG from server and show modal
     socket.on("whatsapp:qr", (payload) => {
-      const src = `${base || ""}/api/messages/qr.png?ts=${Date.now()}`;
+      const src = (base ? `${base}` : "") + "/api/messages/qr.png?ts=" + Date.now();
       setQrSrc(src);
       setQrVisible(true);
     });
 
-    // fallback: if server emits an init error
     socket.on("whatsapp:init_error", (data) => {
       console.warn("WhatsApp init error:", data);
       setWaConnected(false);
     });
 
-    // cleanup on unmount
     return () => {
       if (socket) {
         socket.off("whatsapp:ready");
@@ -93,11 +76,10 @@ export default function Dashboard() {
     };
   }, [base]);
 
-  // initial status check via HTTP (in case socket not connected yet)
   useEffect(() => {
     const check = async () => {
       try {
-        const res = await axios.get(`${base}/api/messages/status`);
+        const res = await axios.get((base ? `${base}` : "") + "/api/messages/status");
         setWaConnected(!!res.data?.connected);
       } catch (e) {
         setWaConnected(false);
@@ -106,51 +88,52 @@ export default function Dashboard() {
     check();
   }, [base]);
 
-  // helper to open QR (manual by clicking Show QR)
   const handleShowQr = async () => {
     try {
-      const res = await axios.get(`${base}/api/messages/qr`);
+      const res = await axios.get((base ? `${base}` : "") + "/api/messages/qr");
       if (res.data && res.data.qr) {
-        setQrSrc(`${base}/api/messages/qr.png?ts=${Date.now()}`);
+        setQrSrc((base ? `${base}` : "") + "/api/messages/qr.png?ts=" + Date.now());
         setQrVisible(true);
       } else {
-        alert("لا يوجد QR حالياً — تأكد من لوجات السيرفر أو اعد تشغيل واتساب على السيرفر.");
+        alert("No QR available currently.");
       }
     } catch (err) {
       console.error("Failed to fetch QR:", err);
-      alert("فشل جلب QR من السيرفر. راجع لوجات السيرفر.");
+      alert("Failed to fetch QR from server. Check server logs.");
     }
   };
 
-  // close QR modal
   const closeQrModal = () => {
     setQrVisible(false);
   };
 
-  // parse numbers input into array of E.164 or numeric strings
   const parseNumbersInput = (text) => {
-    // allow JSON array (e.g. ["2547..","2547.."]) or CSV
-    text = (text || "").trim();
-    if (!text) return [];
+    // Accept JSON array or comma/newline/semicolon separated list.
+    if (!text || !text.trim()) return [];
+    const trimmed = text.trim();
+
+    // Try JSON parse first
     try {
-      const parsed = JSON.parse(text);
+      const parsed = JSON.parse(trimmed);
       if (Array.isArray(parsed)) return parsed.map(String);
-    } catch (e) { /* not JSON */ }
-    // split by comma, newline, or semicolon
-    const parts = text.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
-    return parts;
+    } catch (e) {
+      // not JSON, fallthrough
+    }
+
+    // Split on commas, semicolons or newlines (use RegExp literal safely)
+    const parts = trimmed.split(/[\n,;]+/);
+    return parts.map(p => p.trim()).filter(Boolean);
   };
 
-  // send broadcast
   const handleSendBroadcast = async (e) => {
     e.preventDefault();
     const numbersArr = parseNumbersInput(numbersText);
     if (!numbersArr.length) {
-      alert("المرجو إدخال أرقام (مفصولة بفاصلة أو سطر جديد). مثال: 2547XXXXXXXX,2547YYYYYYYY");
+      alert("Please enter numbers (comma or newline separated).");
       return;
     }
     if (!messageText.trim()) {
-      alert("المرجو كتابة نص الرسالة.");
+      alert("Please enter a message.");
       return;
     }
 
@@ -158,24 +141,21 @@ export default function Dashboard() {
     setSendResult(null);
 
     try {
-      const payload = {
-        numbers: numbersArr,
-        message: messageText.trim()
-      };
-      const res = await axios.post(`${base}/api/messages`, payload);
+      const payload = { numbers: numbersArr, message: messageText.trim() };
+      const res = await axios.post((base ? `${base}` : "") + "/api/messages", payload);
       setSendResult(res.data);
       if (res.data && res.data.ok) {
-        alert("تم إرسال الرسالة (راجع نتائج الإرسال في الأسفل).");
+        alert("Sent. Check result below.");
       } else {
-        alert("الاستجابة من الخادم: " + (res.data?.error || JSON.stringify(res.data)));
+        alert("Server response: " + (res.data?.error || JSON.stringify(res.data)));
       }
     } catch (err) {
       console.error("Send broadcast failed:", err);
       if (err.response && err.response.status === 503) {
-        alert("WhatsApp غير متصل الآن (503). افتح QR وامسحه ثم حاول مرة أخرى.");
+        alert("WhatsApp not connected (503).");
         setWaConnected(false);
       } else {
-        alert("فشل إرسال الرسالة: " + (err.message || JSON.stringify(err)));
+        alert("Send failed: " + (err.message || JSON.stringify(err)));
       }
     } finally {
       setSending(false);
@@ -185,8 +165,6 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-semibold mb-4">Dashboard</h2>
-
-      {/* top summary (original) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="p-4 bg-white rounded-xl shadow-sm border">
           <div className="text-sm text-gray-500">Total clients</div>
@@ -204,7 +182,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* WhatsApp controls */}
       <div className="mt-6 bg-white rounded-xl p-6 shadow-sm border">
         <div className="flex items-center gap-3 mb-4">
           <button
@@ -233,25 +210,24 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Broadcast form */}
         <form onSubmit={handleSendBroadcast} className="space-y-3">
           <div>
             <label className="block text-sm font-medium text-gray-700">Numbers</label>
             <textarea
               rows={2}
-              placeholder={`2547XXXXXXXX,2547YYYYYYYY أو JSON array مثل: ["2547..","2547.."]`}
+              placeholder={'2547XXXXXXXX,2547YYYYYYYY or JSON array like: ["2547..","2547.."]'}
               value={numbersText}
               onChange={(e) => setNumbersText(e.target.value)}
               className="mt-1 block w-full border rounded p-2"
             />
-            <p className="text-xs text-gray-500 mt-1">يمكن فصل الأرقام بفواصل أو أسطر جديدة.</p>
+            <p className="text-xs text-gray-500 mt-1">You can separate numbers with commas or new lines.</p>
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700">Message</label>
             <textarea
               rows={4}
-              placeholder="اكتب الرسالة هنا"
+              placeholder="Type message here"
               value={messageText}
               onChange={(e) => setMessageText(e.target.value)}
               className="mt-1 block w-full border rounded p-2"
@@ -285,13 +261,11 @@ export default function Dashboard() {
         </form>
       </div>
 
-      {/* Recent activity (kept from original) */}
       <div className="mt-6 bg-white rounded-xl p-6 shadow-sm border">
         <h3 className="text-lg font-semibold mb-2">Recent activity</h3>
         <p className="text-sm text-gray-500">No recent activity yet.</p>
       </div>
 
-      {/* QR Modal */}
       {qrVisible && (
         <div
           id="qrModal"

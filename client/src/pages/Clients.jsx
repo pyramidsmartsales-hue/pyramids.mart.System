@@ -1,5 +1,7 @@
+// client/src/pages/Clients.jsx
 import React, { useEffect, useState } from "react";
-import api, { API_BASE } from "../services/api";
+
+const API = import.meta.env.VITE_API_URL || "";
 
 export default function Clients() {
   const [clients, setClients] = useState([]);
@@ -16,9 +18,11 @@ export default function Clients() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get("/api/clients");
-      const data = res.data?.data ?? res.data ?? [];
-      setClients(data);
+      const res = await fetch(`${API}/api/clients`);
+      if (!res.ok) throw new Error("Failed");
+      const json = await res.json();
+      const data = json.data?.data ?? json.data ?? json.clients ?? json;
+      setClients(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error("fetch clients failed", e);
       setError("فشل تحميل قائمة العملاء. تحقق من وحدة التحكم (Console).");
@@ -50,17 +54,17 @@ export default function Clients() {
         notes: form.notes || ""
       };
 
-      const res = await api.post("/api/clients", payload);
-      console.log("Add client response:", res.data);
-
-      setForm({ name: "", phone: "", area: "", notes: "" });
+      const res = await fetch(`${API}/api/clients`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error("Failed to add");
       await fetchClients();
+      setForm({ name: "", phone: "", area: "", notes: "" });
     } catch (err) {
       console.error("Add client failed:", err);
-      const msg = err?.response?.data?.message ||
-                  err?.response?.data ||
-                  err.message ||
-                  "فشل الحفظ";
+      const msg = err?.message || "فشل الحفظ";
       setError(String(msg));
     } finally {
       setSaving(false);
@@ -132,7 +136,7 @@ export default function Clients() {
         )}
       </div>
 
-      <div className="mt-4 text-xs text-gray-500">عنوان API الحالي: <span className="font-mono">{API_BASE}</span></div>
+      <div className="mt-4 text-xs text-gray-500">عنوان API الحالي: <span className="font-mono">{API}</span></div>
     </div>
   );
 }

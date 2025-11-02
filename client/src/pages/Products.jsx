@@ -3,9 +3,10 @@ import React, { useEffect, useState } from "react";
 
 /**
  * Products page (client-side only)
- * - This file contains only browser-compatible code (no `fs`, `path`, `express`, etc.)
- * - It talks to backend endpoints under /api/products
+ * Uses VITE_API_URL for backend base url.
  */
+
+const API = import.meta.env.VITE_API_URL || "";
 
 function SmallInput({ label, value, onChange, type = "text" }) {
   return (
@@ -53,7 +54,7 @@ export default function Products() {
   async function fetchProducts() {
     setLoading(true); setMessage(null);
     try {
-      const res = await fetch("/api/products");
+      const res = await fetch(`${API}/api/products`);
       if (!res.ok) throw new Error("Failed to fetch products");
       const json = await res.json();
       setProducts(json.products ?? []);
@@ -86,13 +87,13 @@ export default function Products() {
       const payload = { ...form, qty: Number(form.qty), price: Number(form.price) };
       let res;
       if (editing && editing.id) {
-        res = await fetch(`/api/products/${editing.id}`, {
+        res = await fetch(`${API}/api/products/${editing.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
       } else {
-        res = await fetch("/api/products", {
+        res = await fetch(`${API}/api/products`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
@@ -104,7 +105,7 @@ export default function Products() {
       if (file && json.product && json.product.id) {
         const fd = new FormData();
         fd.append("image", file);
-        await fetch(`/api/products/${json.product.id}/image`, { method: "POST", body: fd });
+        await fetch(`${API}/api/products/${json.product.id}/image`, { method: "POST", body: fd });
       }
       setFormOpen(false);
       fetchProducts();
@@ -117,7 +118,7 @@ export default function Products() {
   async function deleteProduct(p) {
     if (!confirm(`Delete product "${p.name}"?`)) return;
     try {
-      const res = await fetch(`/api/products/${p.id}`, { method: "DELETE" });
+      const res = await fetch(`${API}/api/products/${p.id}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Delete failed");
       fetchProducts();
     } catch (err) {
@@ -133,7 +134,7 @@ export default function Products() {
     const fd = new FormData();
     fd.append("file", f);
     try {
-      const res = await fetch("/api/products/import", { method: "POST", body: fd });
+      const res = await fetch(`${API}/api/products/import`, { method: "POST", body: fd });
       if (!res.ok) throw new Error("Import failed");
       await res.json();
       setMessage("Import completed (check server).");
@@ -147,7 +148,7 @@ export default function Products() {
   }
 
   function exportProducts() {
-    window.location.href = "/api/products/export";
+    window.location.href = `${API}/api/products/export`;
   }
 
   return (

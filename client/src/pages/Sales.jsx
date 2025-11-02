@@ -1,6 +1,8 @@
 // client/src/pages/Sales.jsx
 import React, { useEffect, useState } from "react";
 
+const API = import.meta.env.VITE_API_URL || "";
+
 export default function Sales() {
   const [cart, setCart] = useState([]);
   const [query, setQuery] = useState("");
@@ -11,7 +13,7 @@ export default function Sales() {
 
   async function fetchProducts() {
     try {
-      const res = await fetch("/api/products");
+      const res = await fetch(`${API}/api/products`);
       const json = await res.json();
       setProducts(json.products || []);
     } catch (e) { console.warn(e); }
@@ -42,7 +44,7 @@ export default function Sales() {
   async function checkout(payment = "cash", discount = 0) {
     try {
       const payload = { items: cart.map(i => ({ id: i.id, qty: i.qty, price: i.price })), payment, discount };
-      const res = await fetch("/api/sales/checkout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const res = await fetch(`${API}/api/sales/checkout`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error("Checkout failed");
       const json = await res.json();
       setMessage("Sale recorded. Invoice: " + (json.invoiceId || ""));

@@ -4,6 +4,8 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from "recharts";
 
+const API = import.meta.env.VITE_API_URL || "";
+
 function KpiCard({ title, value, icon }) {
   return (
     <div className="bg-white rounded-lg shadow p-4">
@@ -42,7 +44,7 @@ export default function Overview() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/overview?start=${s}&end=${e}`);
+      const res = await fetch(`${API}/api/overview?start=${s}&end=${e}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData({
