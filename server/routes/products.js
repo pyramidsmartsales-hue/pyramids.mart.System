@@ -3,6 +3,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { DATA, findProductById } from "../data.js";
+import { syncProductToSheet } from "../services/sheetsSync.js";
 
 const router = express.Router();
 
@@ -33,6 +34,13 @@ router.post("/", async (req, res) => {
     const product = { id: DATA.NEXT_PRODUCT_ID++, name, barcode, category, price: Number(price || 0), unit, qty: Number(qty || 0), expiry, image: null, supplier: supplier || null };
     DATA.PRODUCTS.push(product);
 
+    // try sync to Sheets
+    try {
+      await syncProductToSheet(product);
+    } catch (e) {
+      console.warn("Sheets sync (create product) failed:", e && e.message ? e.message : e);
+    }
+
     res.status(201).json({ product });
   } catch (err) {
     console.error("products:create error", err);
@@ -50,6 +58,13 @@ router.put("/:id", async (req, res) => {
     const { name, barcode, category, price, unit, qty, expiry, supplier } = req.body;
     const updated = { ...DATA.PRODUCTS[idx], name, barcode, category, price: Number(price || 0), unit, qty: Number(qty || 0), expiry, supplier: supplier || DATA.PRODUCTS[idx].supplier };
     DATA.PRODUCTS[idx] = updated;
+
+    // try sync update to Sheets
+    try {
+      await syncProductToSheet(updated);
+    } catch (e) {
+      console.warn("Sheets sync (update product) failed:", e && e.message ? e.message : e);
+    }
 
     res.json({ product: updated });
   } catch (err) {

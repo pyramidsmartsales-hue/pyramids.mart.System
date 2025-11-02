@@ -1,6 +1,8 @@
 // server/routes/suppliers.js
 import express from "express";
 import { DATA } from "../data.js";
+import { syncSupplierToSheet } from "../services/sheetsSync.js";
+
 const router = express.Router();
 
 router.get("/", async (req, res) => {
@@ -12,6 +14,14 @@ router.post("/", async (req, res) => {
     const { name, phone, company, products } = req.body;
     const s = { id: DATA.NEXT_SUPPLIER_ID++, name, phone, company, balance: 0, products: Array.isArray(products) ? products : [] };
     DATA.SUPPLIERS.push(s);
+
+    // try sync to Sheets
+    try {
+      await syncSupplierToSheet(s);
+    } catch (e) {
+      console.warn("Sheets sync (create supplier) failed:", e && e.message ? e.message : e);
+    }
+
     res.status(201).json({ supplier: s });
   } catch (err) {
     console.error("suppliers:create error", err);

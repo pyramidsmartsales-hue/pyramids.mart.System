@@ -1,6 +1,7 @@
 // server/routes/purchases.js
 import express from "express";
 import { DATA, adjustProductQty } from "../data.js";
+import { syncPurchaseToSheet } from "../services/sheetsSync.js";
 
 const router = express.Router();
 
@@ -39,6 +40,14 @@ router.post("/", async (req, res) => {
     }
 
     DATA.PURCHASES.push(inv);
+
+    // try sync purchase to Sheets
+    try {
+      await syncPurchaseToSheet(inv);
+    } catch (e) {
+      console.warn("Sheets sync (create purchase) failed:", e && e.message ? e.message : e);
+    }
+
     res.status(201).json({ invoice: inv });
   } catch (err) {
     console.error("purchases:create error", err);
@@ -64,6 +73,10 @@ router.post("/expenses", async (req, res) => {
       notes: body.notes || ""
     };
     DATA.EXPENSES.push(exp);
+
+    // optional: sync expenses to a sheet (if you add an Expenses sheet you can implement a sync here)
+    // For now, no automatic sync for expenses unless you want it.
+
     res.status(201).json({ expense: exp });
   } catch (err) {
     console.error("expenses:create error", err);

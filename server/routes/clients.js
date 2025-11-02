@@ -1,6 +1,7 @@
 // server/routes/clients.js
 import express from "express";
 import { DATA, findClientByPhone } from "../data.js";
+import { syncClientToSheet } from "../services/sheetsSync.js";
 
 const router = express.Router();
 
@@ -28,6 +29,14 @@ router.post("/", async (req, res) => {
     }
     const client = { id: DATA.NEXT_CLIENT_ID++, name, phone: normalizedPhone, area: area || "", notes: notes || "", points: Number(points || 0) };
     DATA.CLIENTS.push(client);
+
+    // try sync to Google Sheets (best-effort)
+    try {
+      await syncClientToSheet(client);
+    } catch (e) {
+      console.warn("Sheets sync (create client) failed:", e && e.message ? e.message : e);
+    }
+
     res.status(201).json({ client });
   } catch (err) {
     console.error("clients:create error", err);
@@ -46,6 +55,14 @@ router.put("/:id/points", async (req, res) => {
     const idx = DATA.CLIENTS.findIndex(c => c.id === id);
     if (idx === -1) return res.status(404).json({ error: "client not found" });
     DATA.CLIENTS[idx].points = Number(DATA.CLIENTS[idx].points || 0) + delta;
+
+    // sync updated client
+    try {
+      await syncClientToSheet(DATA.CLIENTS[idx]);
+    } catch (e) {
+      console.warn("Sheets sync (update client points) failed:", e && e.message ? e.message : e);
+    }
+
     res.json({ client: DATA.CLIENTS[idx] });
   } catch (err) {
     console.error("clients:update-points error", err);
