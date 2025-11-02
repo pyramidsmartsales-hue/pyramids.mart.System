@@ -5,16 +5,13 @@ import Sidebar from "./components/Sidebar";
 import Header from "./components/Header";
 import Dashboard from "./pages/Dashboard";
 import Clients from "./pages/Clients";
-import Messages from "./pages/Messages";
-import Templates from "./pages/Templates";
-import Analytics from "./pages/Analytics";
-import QRModal from "./components/QRModal";
-import Overview from "./pages/Overview";
 import Products from "./pages/Products";
+import Overview from "./pages/Overview";
 import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import Suppliers from "./pages/Suppliers";
 import Purchases from "./pages/Purchases";
+import QRModal from "./components/QRModal";
 
 export const SocketContext = React.createContext(socket);
 
@@ -58,14 +55,11 @@ export default function App() {
             {route === "suppliers" && <Suppliers />}
             {route === "purchases" && <Purchases />}
             {route === "clients" && <Clients />}
-            {route === "messages" && <Messages />}
-            {route === "templates" && <Templates />}
-            {route === "analytics" && <Analytics />}
           </main>
         </div>
 
         <QRModal qr={qr} onClose={() => setQr(null)} />
       </div>
     </SocketContext.Provider>
-);
+  );
 }
