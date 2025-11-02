@@ -21,6 +21,9 @@ import clientsRouter from "./routes/clients.js";
 import googleSheetsRouter from "./routes/googleSheets.js";
 import whatsappCloudRouter from "./routes/whatsappCloud.js";
 
+// ✅ test route for Sheets sync
+import sheetsTestRouter from "./routes/sheetsTest.js";
+
 // whatsapp-web service initializer
 import { initWhatsApp } from "./services/whatsappWeb.js";
 
@@ -41,24 +44,29 @@ try {
   const wa = initWhatsApp(io);
   // initWhatsApp returns { router, client, getLastQrDataUrl }
   whatsappWebRouter = wa.router;
-  // Note: wa.client can be used later if needed
   console.log("✅ whatsapp-web service initialized (router ready).");
 } catch (err) {
-  console.warn("⚠️ Failed to initialize whatsapp-web service:", err && err.message ? err.message : err);
+  console.warn(
+    "⚠️ Failed to initialize whatsapp-web service:",
+    err && err.message ? err.message : err
+  );
   whatsappWebRouter = null;
 }
 
 // register routes (API)
 app.use("/api/whatsapp", whatsappRouter);              // legacy/local whatsapp routes (if present)
-app.use("/api/whatsapp-cloud", whatsappCloudRouter);  // WhatsApp Cloud wrapper (optional)
+app.use("/api/whatsapp-cloud", whatsappCloudRouter);   // WhatsApp Cloud wrapper (optional)
 
 // mount whatsapp-web router if available
 if (whatsappWebRouter) {
   app.use("/api/whatsapp-web", whatsappWebRouter);
 } else {
-  // provide a simple fallback endpoint so frontend checks don't break
-  app.get("/api/whatsapp-web/status", (req, res) => res.json({ ok: true, connected: false, message: "whatsapp-web not initialized" }));
-  app.get("/api/whatsapp-web/qr", (req, res) => res.json({ ok: true, qr: null }));
+  app.get("/api/whatsapp-web/status", (req, res) =>
+    res.json({ ok: true, connected: false, message: "whatsapp-web not initialized" })
+  );
+  app.get("/api/whatsapp-web/qr", (req, res) =>
+    res.json({ ok: true, qr: null })
+  );
 }
 
 app.use("/api/overview", overviewRouter);
@@ -73,12 +81,15 @@ app.use("/api/clients", clientsRouter);
 // Google Sheets routes
 app.use("/api/sheets", googleSheetsRouter);
 
-// health
+// ✅ Sheets test route (new)
+app.use("/api/sheets", sheetsTestRouter);
+
+// health check
 app.get("/", (req, res) => {
   res.send("PyramidsMart Server Running ✅");
 });
 
-// socket events (minimal)
+// socket events
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
 
@@ -86,20 +97,13 @@ io.on("connection", (socket) => {
     console.log("Client disconnected:", socket.id);
   });
 
-  // request current WA status (client may pass callback)
   socket.on("whatsapp:status", (cb) => {
     try {
-      // emit basic status (frontend was expecting this signature)
       if (typeof cb === "function") cb({ connected: false });
-    } catch (e) {
-      /* ignore */
-    }
+    } catch (e) {}
   });
 
-  // allow client to request server to provide latest QR via event (service emits when available)
   socket.on("whatsapp:request_qr", async () => {
-    // the whatsapp service emits 'whatsapp:qr' to all sockets when QR appears, so nothing required here.
-    // This handler exists for compatibility.
     console.log("Socket requested whatsapp QR");
   });
 });
