@@ -1,6 +1,5 @@
-// server/server.js (UPDATED)
-// - Restores app state from local backup (if present) on startup
-// - Installs graceful shutdown handler to wait for queue and persist state
+// server/server.js
+// Assumes server.js lives in the server/ folder, so imports are relative to that folder.
 
 import express from "express";
 import cors from "cors";
@@ -9,7 +8,7 @@ import http from "http";
 import { Server } from "socket.io";
 import dotenv from "dotenv";
 
-// route imports
+// route imports (relative to this file which is server/server.js)
 import whatsappRouter from "./routes/whatsapp.js";
 import overviewRouter from "./routes/overview.js";
 import productsRouter from "./routes/products.js";
@@ -24,14 +23,16 @@ import clientsRouter from "./routes/clients.js";
 import googleSheetsRouter from "./routes/googleSheets.js";
 import whatsappCloudRouter from "./routes/whatsappCloud.js";
 
-// ✅ test route for Sheets sync
+// test route for Sheets sync
 import sheetsTestRouter from "./routes/sheetsTest.js";
 
-// whatsapp-web service initializer
+// whatsapp-web service initializer (in services/)
 import { initWhatsApp } from "./services/whatsappWeb.js";
 
-// state persistence helpers
+// state persistence helpers (in services/)
 import { restoreFromBackup } from "./services/sheetsPersistWrapper.js";
+
+// graceful shutdown helper (in same folder)
 import { installGracefulShutdown } from "./gracefulShutdown.js";
 
 dotenv.config();
@@ -96,7 +97,7 @@ app.use("/api/clients", clientsRouter);
 // Google Sheets routes
 app.use("/api/sheets", googleSheetsRouter);
 
-// ✅ Sheets test route (new)
+// Sheets test route
 app.use("/api/sheets", sheetsTestRouter);
 
 // health check
