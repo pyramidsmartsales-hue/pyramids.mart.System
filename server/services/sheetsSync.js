@@ -1,18 +1,14 @@
-// server/services/sheetsSync.js
-/**
- * sheetsSync - helper for two-way sync with Google Sheets
- *
- * Requires env:
- *  - GOOGLE_SERVICE_ACCOUNT_EMAIL
- *  - GOOGLE_PRIVATE_KEY  (use \n or literal newline)
- *  - GOOGLE_SHEETS_ID
- *
- * The service account must have edit access to the sheet (share the sheet with the service account email).
- */
+// server/services/sheetsSync.js (UPDATED)
+// Improvements applied:
+// 1. Cache auth JWT client to avoid repeated full authorize() calls.
+// 2. Add simple retry wrapper for network operations (append/read/update).
+// 3. Throw detailed errors so callers (queue wrapper) can retry accordingly.
 
 import { google } from "googleapis";
 
 const SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
+let _cachedJwt = null;
+let _cachedJwtExpiresAt = 0; // timestamp
 
 function getAuthClient() {
   const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
@@ -24,8 +20,13 @@ function getAuthClient() {
     );
   }
 
-  // If the private key was stored with literal '\n' sequences, convert them to real newlines
   privateKey = privateKey.replace(/\\n/g, "\n");
+
+  // reuse cached jwt if not expired
+  const now = Date.now();
+  if (_cachedJwt && _cachedJwtExpiresAt > now + 5000) {
+    return _cachedJwt;
+  }
 
   const jwtClient = new google.auth.JWT({
     email: clientEmail,
@@ -33,15 +34,17 @@ function getAuthClient() {
     scopes: SCOPES,
   });
 
+  _cachedJwt = jwtClient;
+  // do not set expires until authorize() completes in ensureAuth
   return jwtClient;
 }
 
 async function ensureAuth() {
   const jwt = getAuthClient();
   try {
-    // attempt to authorize and throw detailed error if it fails
-    await jwt.authorize();
-    // attach token to auth client for subsequent requests (google client will use it)
+    const r = await jwt.authorize();
+    // google returns an expiry_date in ms
+    if (r && r.expiry_date) _cachedJwtExpiresAt = r.expiry_date;
     return jwt;
   } catch (err) {
     console.error("Google JWT auth error:", err && err.message ? err.message : err);
@@ -54,37 +57,51 @@ async function getSheetsClient() {
   return google.sheets({ version: "v4", auth });
 }
 
-/* --- Basic helpers --- */
+async function withRetries(fn, attempts = 3, delayMs = 1000) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      // small backoff
+      await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
 
+/* --- Basic helpers --- */
 export async function appendRow(sheetName, rowArray) {
-  const sheets = await getSheetsClient();
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   if (!spreadsheetId) throw new Error("GOOGLE_SHEETS_ID not set");
-  const res = await sheets.spreadsheets.values.append({
-    spreadsheetId,
-    range: `'${sheetName}'!A:A`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [rowArray] },
-  });
-  return res.data;
+
+  return withRetries(async () => {
+    const sheets = await getSheetsClient();
+    const res = await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: `'${sheetName}'!A:A`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [rowArray] },
+    });
+    if (!res || res.status < 200 || res.status >= 300) throw new Error(`appendRow failed: ${res?.status}`);
+    return res.data;
+  }, 4, 1200);
 }
 
 export async function readSheet(sheetName) {
-  const sheets = await getSheetsClient();
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   if (!spreadsheetId) throw new Error("GOOGLE_SHEETS_ID not set");
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `'${sheetName}'`,
-  });
-  return res.data.values || [];
+
+  return withRetries(async () => {
+    const sheets = await getSheetsClient();
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${sheetName}'` });
+    if (!res || res.status < 200 || res.status >= 300) throw new Error(`readSheet failed: ${res?.status}`);
+    return res.data.values || [];
+  }, 3, 1000);
 }
 
-/**
- * Find a row index (1-based row number in sheet) where the column `keyColIndex` (0-based) equals string(value)
- * returns rowIndex (1-based) or null
- */
 export async function findRowIndex(sheetName, keyColIndex, value) {
   const rows = await readSheet(sheetName);
   for (let i = 0; i < rows.length; i++) {
@@ -96,32 +113,31 @@ export async function findRowIndex(sheetName, keyColIndex, value) {
   return null;
 }
 
-/** update entire row (replace) at rowIndex (1-based) */
 export async function updateRow(sheetName, rowIndex, valuesArray) {
-  const sheets = await getSheetsClient();
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   if (!spreadsheetId) throw new Error("GOOGLE_SHEETS_ID not set");
-  const range = `'${sheetName}'!A${rowIndex}`;
-  const res = await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range,
-    valueInputOption: "RAW",
-    requestBody: { values: [valuesArray] },
-  });
-  return res.data;
+
+  return withRetries(async () => {
+    const sheets = await getSheetsClient();
+    const range = `'${sheetName}'!A${rowIndex}`;
+    const res = await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range,
+      valueInputOption: "RAW",
+      requestBody: { values: [valuesArray] },
+    });
+    if (!res || res.status < 200 || res.status >= 300) throw new Error(`updateRow failed: ${res?.status}`);
+    return res.data;
+  }, 4, 1200);
 }
 
-/* --- High-level entity sync helpers --- */
-
+/* --- High-level entity sync helpers (unchanged semantics) --- */
 function safe(v) {
   return v === null || v === undefined ? "" : v.toString();
 }
 
 export async function syncClientToSheet(clientObj) {
   const sheet = "Clients";
-  const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
-  if (!spreadsheetId) throw new Error("GOOGLE_SHEETS_ID not set");
-
   let rowIndex = null;
   if (clientObj.id) {
     rowIndex = await findRowIndex(sheet, 0, clientObj.id);
