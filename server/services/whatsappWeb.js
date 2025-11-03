@@ -1,21 +1,19 @@
 // server/services/whatsappWeb.js
-// نسخة معدّلة لاستخدام وضع مرئي مؤقتًا وتقنيات تقليل كشف الأتمتة (stealth).
-// بعد النجاح يمكنك إعادة headless: true أو إزالة التعليقات الخاصة بـ puppeteer-extra إذا لم تعمل.
-
+// تم تعديل الإعدادات لتشغيل puppeteer في بيئات مثل Render (headless + args مناسبة).
 import express from "express";
 import qrcode from "qrcode";
 import pkg from "whatsapp-web.js";
 const { Client, LocalAuth, MessageMedia } = pkg;
 
-// حاول استدعاء puppeteer-extra / stealth إذا تم تثبيته
+// حاول استدعاء puppeteer-extra / stealth إذا تم تثبيته (اختياري)
 let puppeteerExtra;
 let StealthPlugin;
 try {
   // الحزم اختياريّة؛ ثبّتها إذا أردت تجربة stealth:
   // npm install puppeteer-extra puppeteer-extra-plugin-stealth --save
   // (لا تثبت puppeteer يدوياً هنا لأن whatsapp-web.js يجلب puppeteer داخليًا)
-  puppeteerExtra = await import("puppeteer-extra").then(m => m.default || m);
-  StealthPlugin = await import("puppeteer-extra-plugin-stealth").then(m => m.default || m);
+  puppeteerExtra = await import("puppeteer-extra").then((m) => m.default || m);
+  StealthPlugin = await import("puppeteer-extra-plugin-stealth").then((m) => m.default || m);
   if (puppeteerExtra && StealthPlugin) {
     puppeteerExtra.use(StealthPlugin());
     console.log("🛡️ puppeteer-extra + stealth plugin loaded");
@@ -33,30 +31,38 @@ export function initWhatsApp(io = null) {
   const router = express.Router();
 
   // ----- تهيئة عميل WhatsApp -----
-  // إذا كانت puppeteerExtra متاحة ونريد تمريرها لwhatsapp-web.js قد تعمل بعض النسخ بشكل مختلف.
-  // هنا نمرّر إعدادات puppeteer التقليدية مع محاولة تمويه علامات الأتمتة.
+  // اجعل HEADLESS قابلاً للتغيير عبر متغير بيئة، القيمة الافتراضية: true
+  const headlessEnv = process.env.HEADLESS;
+  const HEADLESS = typeof headlessEnv !== "undefined" ? headlessEnv === "true" : true;
+
+  // اذا كان هناك مسار Chromium محدد في البيئة فمرره
+  const chromiumPath = process.env.CHROMIUM_PATH || undefined;
+
   client = new Client({
     authStrategy: new LocalAuth({ clientId: "pyramidsmart" }),
 
-    // خيارات puppeteer — اجعل headless:false أثناء التصحيح لملاحظة صفحة WhatsApp مباشرة.
+    // إعدادات puppeteer المصححة للعمل في بيئات مثل Render
     puppeteer: {
-      headless: false, // اجعل false مؤقتًا للمشاهدة أثناء التشخيص؛ بعد النجاح ضعه true
+      headless: HEADLESS,
+      executablePath: chromiumPath, // قد يكون undefined ويستخدم الافتراضي الذي يجلبه whatsapp-web.js
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-extensions",
+        "--single-process",
+        "--no-zygote",
         "--disable-gpu",
+        "--disable-extensions",
+        "--disable-infobars",
         "--window-size=1200,900",
-        "--disable-blink-features=AutomationControlled" // يقلل من اكتشاف automation
+        "--disable-blink-features=AutomationControlled",
       ],
-      // إذا تريد إجبار استخدام Chrome المحلي (أقل كشفاً) فكّ التعليق وغيّر المسار إن لزم:
-      // executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      // يمكنك ضبط timeout هنا لو احتجت:
+      // timeout: 0
     },
 
-    // منع بعض تضاربات الجلسة واختيار مهلة أطول
     takeoverOnConflict: true,
-    takeoverTimeoutMs: 60000
+    takeoverTimeoutMs: 60000,
   });
 
   // ----- مستمعات الأحداث (debug / logs) -----
@@ -108,33 +114,44 @@ export function initWhatsApp(io = null) {
   });
 
   client.on("message", (msg) => {
-    // طباعة بسيطة للرسائل الواردة (اختياري)
     console.log("💬 Message received from:", msg.from);
   });
 
   // ----- بدء التشغيل -----
-  client.initialize();
+  try {
+    client.initialize();
+  } catch (initErr) {
+    console.error("Failed to initialize WhatsApp client:", initErr);
+  }
 
   // --- Express endpoints ---
+
+  // health endpoint صريح لـ Render / healthchecks
+  router.get("/healthz", (req, res) => {
+    res.status(200).json({ ok: true, connected: ready });
+  });
 
   // حالة الاتصال
   router.get("/status", (req, res) => res.json({ ok: true, connected: ready }));
 
   // استرجاع QR لمسحه
   router.get("/qr", async (req, res) => {
-    const qrDataUrl = lastQr ? await qrcode.toDataURL(lastQr) : null;
-    res.json({ ok: true, qr: qrDataUrl });
+    try {
+      const qrDataUrl = lastQr ? await qrcode.toDataURL(lastQr) : null;
+      res.json({ ok: true, qr: qrDataUrl });
+    } catch (e) {
+      console.error("QR fetch error:", e);
+      res.status(500).json({ ok: false, error: "Failed to generate QR" });
+    }
   });
 
   // إرسال رسالة نصية
   router.post("/send", async (req, res) => {
     try {
-      if (!ready)
-        return res.status(503).json({ ok: false, error: "WhatsApp not connected" });
+      if (!ready) return res.status(503).json({ ok: false, error: "WhatsApp not connected" });
 
       const { to, message } = req.body;
-      if (!to || !message)
-        return res.status(400).json({ ok: false, error: "to and message required" });
+      if (!to || !message) return res.status(400).json({ ok: false, error: "to and message required" });
 
       const chatId = to.replace(/\+/g, "").replace(/\s+/g, "") + "@c.us";
       const sent = await client.sendMessage(chatId, message);
@@ -148,12 +165,10 @@ export function initWhatsApp(io = null) {
   // إرسال وسائط (صور، ملفات...)
   router.post("/send-media", async (req, res) => {
     try {
-      if (!ready)
-        return res.status(503).json({ ok: false, error: "WhatsApp not connected" });
+      if (!ready) return res.status(503).json({ ok: false, error: "WhatsApp not connected" });
 
       const { to, base64, filename, caption } = req.body;
-      if (!to || !base64)
-        return res.status(400).json({ ok: false, error: "Missing parameters" });
+      if (!to || !base64) return res.status(400).json({ ok: false, error: "Missing parameters" });
 
       const chatId = to.replace(/\+/g, "").replace(/\s+/g, "") + "@c.us";
       const media = new MessageMedia("", base64, filename);
