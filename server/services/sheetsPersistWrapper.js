@@ -4,7 +4,7 @@
 
 import { enqueue } from '../helpers/queue.js';
 import { saveLocalBackup, loadLocalBackup } from '../helpers/localBackup.js';
-import * as sheetsSync from '../sheetsSync.js'; // adjust path if needed
+import * as sheetsSync from './sheetsSync.js'; // adjust path if needed
 
 
 // Example global in-memory state (restore on boot)
