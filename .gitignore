@@ -26,3 +26,4 @@ server/uploads/
 # system files
 .DS_Store
 Thumbs.db
+.wwebjs_auth/
