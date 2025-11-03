@@ -1,0 +1,64 @@
+# -------- STAGE 1: build (optional client build) --------
+FROM node:18-bullseye AS build
+WORKDIR /app
+
+# speed up noninteractive apt usage later (if needed in later stages)
+ENV DEBIAN_FRONTEND=noninteractive
+
+# copy package files for caching
+COPY package*.json ./
+# copy subproject package files if exist (avoids copying whole repo early)
+COPY server/package*.json ./server/ 2>/dev/null || true
+COPY client/package*.json ./client/ 2>/dev/null || true
+
+# Install server dependencies (production)
+RUN if [ -f server/package.json ]; then cd server && npm ci --no-audit --prefer-offline; fi
+
+# Build client only if client/package.json exists
+RUN if [ -f client/package.json ]; then \
+      cd client && npm ci --no-audit --prefer-offline && npm run build --if-present; \
+    fi
+
+# copy full source after installing deps (to leverage cache)
+COPY . .
+
+# -------- STAGE 2: runtime --------
+FROM node:18-bullseye
+ENV NODE_ENV=production
+ENV PORT=10000
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /app
+
+# Avoid puppeteer downloading its own chromium if using system chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV CHROMIUM_PATH=/usr/bin/chromium
+
+# Install system deps required by Chromium / Puppeteer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates fonts-liberation libasound2 libatk1.0-0 libc6 \
+    libcairo2 libdbus-1-3 libexpat1 libfontconfig1 libgbm1 libgcc1 \
+    libglib2.0-0 libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 libstdc++6 \
+    libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 \
+    libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 \
+    wget gnupg ca-certificates --no-install-recommends \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install chromium package (Debian)
+RUN apt-get update && apt-get install -y --no-install-recommends chromium \
+  && rm -rf /var/lib/apt/lists/*
+
+# copy built server/client from build stage if exists
+COPY --from=build /app/server ./server
+COPY --from=build /app/client/build ./client/build
+
+# as fallback copy whole repo (useful if build stage didn't copy everything)
+COPY . .
+
+# expose port
+EXPOSE 10000
+
+# Use CHROMIUM_PATH env (can be overridden in Render)
+ENV CHROMIUM_PATH=/usr/bin/chromium
+
+# start
+CMD ["node", "server/server.js"]
