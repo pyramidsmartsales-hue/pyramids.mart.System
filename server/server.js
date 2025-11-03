@@ -32,8 +32,8 @@ import { initWhatsApp } from "./services/whatsappWeb.js";
 // state persistence helpers (in services/)
 import { restoreFromBackup } from "./services/sheetsPersistWrapper.js";
 
-// graceful shutdown helper (in same folder)
-import { installGracefulShutdown } from "./gracefulShutdown.js";
+// graceful shutdown helper (default export)
+import installGracefulShutdown from "./gracefulShutdown.js";
 
 dotenv.config();
 
@@ -128,7 +128,7 @@ const PORT = Number(process.env.PORT || 5000);
 
 // install graceful shutdown handlers BEFORE starting the server
 try {
-  installGracefulShutdown();
+  installGracefulShutdown({ shutdownTimeout: 30000 });
   console.log('[startup] graceful shutdown installed');
 } catch (e) {
   console.warn('[startup] failed to install graceful shutdown', e && e.message ? e.message : e);

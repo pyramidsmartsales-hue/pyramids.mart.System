@@ -1,54 +1,101 @@
 // server/gracefulShutdown.js
-// Waits for the sheets queue to finish, saves local backup of APP_STATE and exits cleanly.
+// ESM version — dynamic import for helpers/queue.js and robust graceful shutdown.
 
-import { waitForQueueEmpty } from "./helpers/queue.js";
 import { saveLocalBackup } from "./helpers/localBackup.js";
 import { APP_STATE } from "./services/sheetsPersistWrapper.js";
 
-export function installGracefulShutdown() {
-  async function shutdown(signal) {
-    console.log(`[shutdown] received ${signal} — waiting for queue to empty...`);
+/**
+ * installGracefulShutdown(options)
+ * options:
+ *  - shutdownTimeout: number ms to wait for the queue (default 30000)
+ */
+export function installGracefulShutdown({ shutdownTimeout = 30000 } = {}) {
+  let isShuttingDown = false;
 
+  async function tryWaitForQueueEmpty(timeoutMs) {
     try {
-      // Wait up to 30s for queue to clear
-      await waitForQueueEmpty(30000);
-    } catch (e) {
-      console.warn("[shutdown] waitForQueueEmpty threw:", e && e.message ? e.message : e);
-    }
+      // dynamic import: if helpers/queue.js doesn't exist, skip waiting
+      const mod = await import("./helpers/queue.js").catch(() => null);
+      if (!mod) {
+        console.log("[shutdown] helpers/queue.js not found — skipping queue wait");
+        return false;
+      }
 
-    try {
-      // Save the current application state to local backup as a final step
-      saveLocalBackup("last_state", APP_STATE);
-      console.log("[shutdown] saved last_state backup");
-    } catch (e) {
-      console.error("[shutdown] failed to save backup:", e && e.message ? e.message : e);
-    }
+      const waitForQueueEmptyFn = mod.waitForQueueEmpty || mod.default || null;
+      if (typeof waitForQueueEmptyFn !== "function") {
+        console.log("[shutdown] waitForQueueEmpty not exported by helpers/queue.js — skipping");
+        return false;
+      }
 
-    console.log("[shutdown] exiting process");
-    process.exit(0);
+      // race between waiting and a timeout
+      const start = Date.now();
+      await Promise.race([
+        waitForQueueEmptyFn(timeoutMs),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("waitForQueueEmpty timeout")), timeoutMs))
+      ]);
+      console.log(`[shutdown] waitForQueueEmpty finished in ${Date.now() - start}ms`);
+      return true;
+    } catch (err) {
+      console.warn("[shutdown] error during waitForQueueEmpty (continuing):", err.message || err);
+      return false;
+    }
   }
 
+  async function doBackupSafe() {
+    try {
+      if (typeof saveLocalBackup === "function") {
+        console.log("[shutdown] saving local backup...");
+        await Promise.resolve(saveLocalBackup(APP_STATE));
+        console.log("[shutdown] saved last_state backup");
+      } else {
+        console.warn("[shutdown] saveLocalBackup is not a function — skipping backup");
+      }
+    } catch (err) {
+      console.warn("[shutdown] failed to save local backup:", err.message || err);
+    }
+  }
+
+  async function shutdown(signal) {
+    if (isShuttingDown) {
+      console.log("[shutdown] already shutting down — ignoring further signal", signal);
+      return;
+    }
+    isShuttingDown = true;
+    console.log(`[shutdown] received ${signal} — starting graceful shutdown sequence`);
+
+    // 1) wait for queue if possible
+    try {
+      await tryWaitForQueueEmpty(shutdownTimeout);
+    } catch (err) {
+      console.warn("[shutdown] error waiting for queue:", err.message || err);
+    }
+
+    // 2) save backup
+    await doBackupSafe();
+
+    // 3) short delay to allow logs to flush, then exit
+    console.log("[shutdown] completed tasks, exiting...");
+    setTimeout(() => {
+      try {
+        process.exit(0);
+      } catch (e) {}
+    }, 200);
+  }
+
+  // register system signals
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
-
+  process.on("SIGHUP", () => shutdown("SIGHUP"));
   process.on("uncaughtException", (err) => {
-    console.error("[shutdown] uncaughtException:", err && err.stack ? err.stack : err);
-    try {
-      saveLocalBackup("last_state", APP_STATE);
-      console.log("[shutdown] saved last_state after uncaughtException");
-    } catch (e) {
-      console.warn("[shutdown] failed to save after uncaughtException:", e && e.message ? e.message : e);
-    }
-    setTimeout(() => process.exit(1), 1000);
+    console.error("[shutdown] uncaughtException:", err.stack || err);
+    shutdown("uncaughtException");
   });
-
   process.on("unhandledRejection", (reason) => {
     console.error("[shutdown] unhandledRejection:", reason);
-    try {
-      saveLocalBackup("last_state", APP_STATE);
-    } catch (e) {}
-    setTimeout(() => process.exit(1), 1000);
+    shutdown("unhandledRejection");
   });
 
-  console.log("[shutdown] graceful shutdown handlers installed");
+  return { shutdown, isShuttingDown: () => isShuttingDown };
 }
+
+export default installGracefulShutdown;
