@@ -1,9 +1,12 @@
-// server/services/whatsappWeb.js
-// WhatsApp Web integration using whatsapp-web.js + LocalAuth.
-// Exports: initWhatsApp(io, options) -> returns { router, client, getLastQrDataUrl }
-// - router: express router with endpoints for status, qr, send
-// - client: whatsapp client instance (useful for advanced usage)
-// - getLastQrDataUrl: function to get latest QR data URL
+// server/services/whatsapp.service.js (UPDATED)
+// Improvements applied:
+// 1. Robust re-initialization when disconnected: create a NEW Client instance instead
+//    of calling initialize() on a destroyed client. This avoids race conditions.
+// 2. Centralized handler registration (registerHandlers) so re-created clients get the
+//    same handlers bound automatically.
+// 3. Logs the LocalAuth storage path and checks if session folder exists to help
+//    debug ephemeral filesystems (Docker volumes, cloud hosts).
+// 4. Exports a consistent API: initWhatsApp(io, opts) -> { router, getClient, getLastQrDataUrl }
 
 import express from "express";
 import qrcode from "qrcode";
@@ -11,39 +14,47 @@ import { Client, LocalAuth, MessageMedia } from "whatsapp-web.js";
 import fs from "fs";
 import path from "path";
 
-let lastQr = null;
 let client = null;
+let lastQr = null;
 let ready = false;
+let authStrategy = null;
 
-/**
- * initWhatsApp(io, opts)
- * - io: Socket.IO server instance (optional) — used to emit 'whatsapp:qr' and 'whatsapp:status'
- * - opts: { puppeteer?: object } optional puppeteer args
- */
-export function initWhatsApp(io = null, opts = {}) {
-  const router = express.Router();
+function createAuthStrategy(clientId = "pyramids-mart") {
+  // LocalAuth will store session data under a folder in the user data directory
+  // e.g. ./whatsapp-local-auth/<clientId> or .wwebjs_auth under current working dir.
+  return new LocalAuth({ clientId });
+}
 
-  // create client using LocalAuth (stores session in ./session or default path)
-  const authStrategy = new LocalAuth({
-    clientId: "pyramids-mart" // folder per-client, change if multiple instances
-  });
+function logAuthPathIfPossible(auth) {
+  try {
+    // LocalAuth stores data in a folder. We attempt to discover the path (best-effort).
+    // This relies on internal behavior of the library so we guard with try/catch.
+    const baseDir = process.cwd();
+    const possible = [
+      path.join(baseDir, ".wwebjs_auth"),
+      path.join(baseDir, "whatsapp-local-auth"),
+      // LocalAuth sometimes places under node_modules/.local or visible via auth object
+    ];
 
-  client = new Client({
-    authStrategy,
-    takeoverOnConflict: true,
-    puppeteer: opts.puppeteer || {
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
-    }
-  });
+    possible.forEach((p) => {
+      if (fs.existsSync(p)) {
+        console.log(`[WA] LocalAuth session folder exists: ${p}`);
+      }
+    });
+  } catch (e) {
+    // don't fail startup for this
+  }
+}
+
+function registerHandlers(io) {
+  if (!client) return;
 
   client.on("qr", async (qr) => {
-    // save last QR and emit to socket if present
     try {
       lastQr = qr;
       const dataUrl = await qrcode.toDataURL(qr);
       if (io && io.emit) io.emit("whatsapp:qr", { qrDataUrl: dataUrl });
-      console.log("[WA] QR generated (emitted via socket)");
+      console.log("[WA] QR generated");
     } catch (err) {
       console.error("[WA] QR -> DataURL error", err);
     }
@@ -67,50 +78,89 @@ export function initWhatsApp(io = null, opts = {}) {
     if (io && io.emit) io.emit("whatsapp:status", { connected: false, error: msg });
   });
 
-  client.on("disconnected", (reason) => {
-    console.warn("[WA] Disconnected", reason);
-    ready = false;
-    if (io && io.emit) io.emit("whatsapp:status", { connected: false, reason });
-    // try to destroy and reinitialize cleanly
-    try {
-      client.destroy();
-    } catch (e) {}
-    // re-init after small delay
-    setTimeout(() => {
-      try { client.initialize(); } catch (e) { console.error("[WA] re-init failed", e); }
-    }, 3000);
-  });
-
   client.on("change_state", (state) => {
-    // optionally emit state changes
     if (io && io.emit) io.emit("whatsapp:change_state", state);
   });
 
-  client.initialize().catch(err => {
-    console.error("[WA] initialization error:", err);
+  client.on("disconnected", async (reason) => {
+    console.warn("[WA] Disconnected", reason);
+    ready = false;
+    if (io && io.emit) io.emit("whatsapp:status", { connected: false, reason });
+
+    // Destroy existing client and create a fresh one after a short delay.
+    // This avoids re-using a destroyed client instance which can cause errors.
+    try {
+      await client.destroy();
+    } catch (e) {
+      console.warn("[WA] client.destroy() threw:", e);
+    }
+
+    // Small delay to let resources clear
+    setTimeout(() => {
+      try {
+        console.log('[WA] Recreating client after disconnect...');
+        // Recreate auth strategy and client
+        authStrategy = createAuthStrategy(authStrategy?.options?.clientId || "pyramids-mart");
+        startClient(io);
+      } catch (err) {
+        console.error('[WA] Failed to recreate client:', err);
+      }
+    }, 2500);
+  });
+}
+
+function startClient(io, opts = {}) {
+  // ensure we replace any previous client variable
+  client = new Client({
+    authStrategy: authStrategy,
+    takeoverOnConflict: true,
+    puppeteer: opts.puppeteer || {
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    },
   });
 
-  // helper: return qr as data URL (if lastQr exists)
+  // register handlers for new client
+  registerHandlers(io);
+
+  client
+    .initialize()
+    .then(() => {
+      console.log('[WA] client.initialize() resolved');
+    })
+    .catch((err) => {
+      console.error('[WA] initialization error:', err);
+    });
+
+  return client;
+}
+
+export function initWhatsApp(io = null, opts = {}) {
+  const router = express.Router();
+
+  // prepare auth strategy and start client
+  authStrategy = createAuthStrategy(opts.clientId || "pyramids-mart");
+  logAuthPathIfPossible(authStrategy);
+  startClient(io, opts);
+
+  // --- helper: return qr as data URL (if lastQr exists)
   async function getLastQrDataUrl() {
     if (!lastQr) return null;
     try {
       const dataUrl = await qrcode.toDataURL(lastQr);
       return dataUrl;
     } catch (e) {
-      console.error("qr to data url error", e);
+      console.error("[WA] qr to data url error", e);
       return null;
     }
   }
 
   // --- Express endpoints ---
-
-  // GET /api/whatsapp-web/status
-  router.get("/status", (req, res) => {
+  router.get('/status', (req, res) => {
     res.json({ ok: true, connected: !!ready, clientInitialized: !!client });
   });
 
-  // GET /api/whatsapp-web/qr  -> returns { ok, qrDataUrl }
-  router.get("/qr", async (req, res) => {
+  router.get('/qr', async (req, res) => {
     try {
       const dataUrl = await getLastQrDataUrl();
       res.json({ ok: true, qr: dataUrl });
@@ -119,61 +169,54 @@ export function initWhatsApp(io = null, opts = {}) {
     }
   });
 
-  /**
-   * POST /api/whatsapp-web/send
-   * body: { to: "+2547...", message: "text" }
-   */
-  router.post("/send", async (req, res) => {
+  router.post('/send', async (req, res) => {
     try {
-      if (!client) return res.status(500).json({ ok: false, error: "WhatsApp client not initialized" });
-      if (!ready) return res.status(503).json({ ok: false, error: "WhatsApp not connected (scan QR first)" });
+      if (!client) return res.status(500).json({ ok: false, error: 'WhatsApp client not initialized' });
+      if (!ready) return res.status(503).json({ ok: false, error: 'WhatsApp not connected (scan QR first)' });
 
       const { to, message } = req.body || {};
-      if (!to || !message) return res.status(400).json({ ok: false, error: "to and message required" });
+      if (!to || !message) return res.status(400).json({ ok: false, error: 'to and message required' });
 
-      // Ensure correct format: whatsapp-web.js expects '2547...' or '2547...' without plus, but accepts with + sometimes.
-      const normalized = String(to).replace(/\s+/g, "");
-      // For whatsapp-web.js you need the chat id: e.g., "2547xxxxxxx@c.us"
-      const chatId = normalized.includes("@") ? normalized : (normalized.startsWith("+") ? normalized.slice(1) : normalized) + "@c.us";
+      const normalized = String(to).replace(/\s+/g, '');
+      const chatId = normalized.includes('@') ? normalized : (normalized.startsWith('+') ? normalized.slice(1) : normalized) + '@c.us';
 
       const sent = await client.sendMessage(chatId, message);
       res.json({ ok: true, result: sent });
     } catch (err) {
-      console.error("wa send error", err);
+      console.error('wa send error', err);
       res.status(500).json({ ok: false, error: err.message || String(err) });
     }
   });
 
-  /**
-   * POST /api/whatsapp-web/send-media
-   * body: { to: "+2547...", base64: "<data>", filename: "photo.jpg", caption: "caption" }
-   */
-  router.post("/send-media", async (req, res) => {
+  router.post('/send-media', async (req, res) => {
     try {
-      if (!client) return res.status(500).json({ ok: false, error: "WhatsApp client not initialized" });
-      if (!ready) return res.status(503).json({ ok: false, error: "WhatsApp not connected" });
+      if (!client) return res.status(500).json({ ok: false, error: 'WhatsApp client not initialized' });
+      if (!ready) return res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
 
       const { to, base64, filename, caption } = req.body || {};
-      if (!to || !base64 || !filename) return res.status(400).json({ ok: false, error: "to, base64 and filename required" });
+      if (!to || !base64 || !filename) return res.status(400).json({ ok: false, error: 'to, base64 and filename required' });
 
-      const normalized = String(to).replace(/\s+/g, "");
-      const chatId = normalized.includes("@") ? normalized : (normalized.startsWith("+") ? normalized.slice(1) : normalized) + "@c.us";
+      const normalized = String(to).replace(/\s+/g, '');
+      const chatId = normalized.includes('@') ? normalized : (normalized.startsWith('+') ? normalized.slice(1) : normalized) + '@c.us';
 
-      // base64 should be dataURL or raw base64. If starts with "data:" strip prefix.
       let rawBase64 = base64;
       const m = base64.match(/^data:(.+);base64,(.*)$/);
       if (m) rawBase64 = m[2];
 
-      const buffer = Buffer.from(rawBase64, "base64");
-      const media = new MessageMedia("", buffer.toString("base64"), filename);
-      const sent = await client.sendMessage(chatId, media, { caption: caption || "" });
+      const buffer = Buffer.from(rawBase64, 'base64');
+      const media = new MessageMedia('', buffer.toString('base64'), filename);
+      const sent = await client.sendMessage(chatId, media, { caption: caption || '' });
       res.json({ ok: true, result: sent });
     } catch (err) {
-      console.error("wa send-media error", err);
+      console.error('wa send-media error', err);
       res.status(500).json({ ok: false, error: err.message || String(err) });
     }
   });
 
-  // Return router + helpers
-  return { router, client, getLastQrDataUrl };
+  // Expose helper to get client instance (may be null)
+  function getClient() {
+    return client;
+  }
+
+  return { router, getClient, getLastQrDataUrl };
 }
