@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "careful-emitter-476511-u4",
+  "private_key_id": "dac4de47619f07b33f963e9958adaa00eff0b3de",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQC6lLLCweOwRFsH\nv7FDKpxa9OZ4KyRbCDIuibAC7ieeSQC/Upz7mjVom2pHDnOztlQIqAWnJlmA66Jo\n/GNYMp/b22wi7HmP9AvHdCccP6nEJXfr6DR4mxU4uG1vXXTOtUNljERnllCiq7ML\nvT5pGLR0DNGfwdC8BeZvmXkHPtvoBGKVhxOiplB7YmsSSmKPoq3t9DI7Thh3tmTD\nRjZzsxhhF+iJ3i33zX3lMaek8PuGlbvN7/V8ghEbsZKcS7BLqkbsIy8fUj4XYXjJ\ngoJK+JZRktSBNsD9Dl5vApBBzv/uPRE+TReXCyw7KnbbzALMp/4Wm9OLFBx82Jo/\nglLvqPb5AgMBAAECgf9gwDryQxiOjuOlYQHKko4BnHzmU3jGu7lJ6Jwc6OIicjiw\n/WXqEk0fsXeq4ROeXS22T2qfAoPnFklhp37cfWPn3iB0+6sNur9g7hpZy6l8zPEi\no4aSA9k9UGVvGkc36UbJobLXBFtL/z0ZGUkDtovcockRzq8u0OBtfmgEGdRuuvS6\nnybNb10kWCnXNJNW5BRcfD+yv+BgRjfpN9VGVUqwOcsSvqHnXpQlBm8BFUksONzS\njMkXIQj0Z940QoI6TdZMRC/6TyPHzTcevfH13bL+T2Ip76yHmLDAXKgdvhLEBTzI\nsDtJnmmnovwe1VEYahqcSFxPSo5b5nQtqBBTNiECgYEA2uZnIH2db2V/ykdJZ/oT\nA5QGWZIOazjsK7ZYqQ5Al1mxTPcffSsahhsxoEssMotAFMEmI4ilQZC4eepxHdSR\ncT1Oitj7fvguFRlg38IBGbbxzTL9XVFnhx4QMQT67YVYFjE/17fP3HAEuNaZUiMM\nuQDY21m9MYo67pGAdEYtMTECgYEA2jQJhV64h0PEJfr8UcJ2RRqlzLyJS5308smO\nGyZz0na7+fjhAYH38X6XQpftr+aWq02PRtWniXm7Pw01R8MmNW0Qc5fSbAa55+/a\nKCvNPEXCiBQ8mElDGiQCdXTyj74MBoRGly4an8cyAfvoFY+b2YbLOJ4A4QQOXPHF\nnw8o8EkCgYEAhc0Nvktp/xxgh0kZsoemNaq2Uuu3Co0ptvJnsTY3/wthF7V6Nu0w\n8kYPCHbKlj6NteH2KQQuVyxZxpOp/tze5gPeTXqiB5M1v8nacAtK1uf/VzlSq0bF\n7E5RAVWU97hpBm+mIXqGgKysBjuOTimEblT5OOLahTyEFy0zAl+e4hECgYB1fzPp\nR1oiLFGBCie4dvhsua6yEovz1fjCi9ojsI8Js7oBHw06XJwAxGP7DgiFgat8TuVq\nBT6T/qLfjuMz41e9yR7kv8olNXIB/NwCaaO4YvAfipYegsTJXL6eNP0wfevHzo6c\ndc0MYJ0DCHyur4gCmFzx/dMHV8HMNrxtrCIlUQKBgGmEVSbM6ShhODbOvjodWXdi\nUmbbIsCqBuLPNylC1dyKLBI0EdSvQmgbkCcU+hxxKPCxzTUQui0JFK+7zPGT3ryb\nizzhNo9svl1zXJ9wyErCpM2iEeDnOvtiBSdV26fv/0GhpXztKgxbxDrQSfiimTiN\nL/JewBWowcmk9esRMWbL\n-----END PRIVATE KEY-----\n",
+  "client_email": "pyramidsmart-service@careful-emitter-476511-u4.iam.gserviceaccount.com",
+  "client_id": "106643283642160190154",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/pyramidsmart-service%40careful-emitter-476511-u4.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
