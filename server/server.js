@@ -5,6 +5,7 @@ import morgan from "morgan";
 import http from "http";
 import { Server } from "socket.io";
 import dotenv from "dotenv";
+import { v4 as uuidv4 } from "uuid";
 
 import whatsappRouter from "./routes/whatsapp.js";
 import overviewRouter from "./routes/overview.js";
@@ -24,7 +25,8 @@ import { initWhatsApp } from "./services/whatsappWeb.js";
 import { restoreFromBackup } from "./services/sheetsPersistWrapper.js";
 import installGracefulShutdown from "./gracefulShutdown.js";
 
-import { v4 as uuidv4 } from "uuid"; // لأجل توليد external_id مؤقت إذا لزم
+// <-- IMPORT SYNC SERVICE (file provided separately)
+import * as syncService from "./services/syncService.js";
 
 dotenv.config();
 
@@ -36,12 +38,9 @@ app.use(morgan("dev"));
 // safety: global handlers to avoid process crash on unhandledRejection
 process.on("unhandledRejection", (reason, promise) => {
   console.error("[process] unhandledRejection:", reason && reason.stack ? reason.stack : reason);
-  // DO NOT process.exit(1) here; prefer to log and let graceful shutdown handle it
 });
-
 process.on("uncaughtException", (err) => {
   console.error("[process] uncaughtException:", err && err.stack ? err.stack : err);
-  // optionally: notify/alerting system here, then exit gracefully
 });
 
 try {
@@ -66,7 +65,7 @@ try {
   whatsappWebRouter = null;
 }
 
-// routes (existing)
+// existing routes
 app.use("/api/whatsapp", whatsappRouter);
 app.use("/api/whatsapp-cloud", whatsappCloudRouter);
 if (whatsappWebRouter) {
@@ -90,94 +89,86 @@ app.use("/api/sheets", googleSheetsRouter);
 app.use("/api/sheets", sheetsTestRouter);
 
 /**
- * NEW: Google Sheets webhook endpoint
- * - Expect POST requests from Apps Script with payload:
- *   { action: 'add'|'edit'|'remove_rows'|'reconcile', sheetName, row, rowData, rows, timestamp, editor }
+ * POST /api/sync/sheet-changes
+ * - Expects POST JSON from Apps Script:
+ *   { action: 'add'|'edit'|'remove_rows'|'reconcile', sheetName, row, rowData, rows, sheets, timestamp, editor }
  *
- * - Behavior:
- *   - add: create record in DB (or simulate) and return external_id
- *   - edit: update record by external_id
- *   - remove_rows: trigger reconciliation (server should compare sheet external_ids with DB)
- *   - reconcile: receive full sheets payload and reconcile (create/update/delete as needed)
- *
- * IMPORTANT: Apps Script sends POST. If you open this url in browser (GET) you'll see "Cannot GET".
+ * Behavior:
+ *  - add: upsert -> returns external_id (created or existing)
+ *  - edit: upsert by external_id (or create if missing)
+ *  - remove_rows: request reconciliation (Apps Script will run reconcileWithServer)
+ *  - reconcile: receives full sheets payload -> upsert all rows + mark missing external_ids as deleted
  */
-
 app.post("/api/sync/sheet-changes", async (req, res) => {
   try {
     const payload = req.body || {};
-    console.log("📩 /api/sync/sheet-changes received payload:", JSON.stringify(payload, null, 2));
+    console.log("📩 /api/sync/sheet-changes payload:", JSON.stringify(payload, null, 2));
 
     const action = (payload.action || "").toString().toLowerCase();
     const sheetName = payload.sheetName || null;
     const row = payload.row || null;
     const rowData = payload.rowData || null;
 
-    // Helper: respond helper
     const ok = (data) => res.status(200).json(Object.assign({ ok: true }, data || {}));
     const err = (message, code = 500) => res.status(code).json({ ok: false, error: message });
 
-    // --- ACTION: ADD ---
+    // ADD (create or upsert)
     if (action === "add") {
-      console.log(`🟢 [sheet:${sheetName}] ADD row=${row} data=`, rowData);
-
-      // TODO: هنا ضع منطق إنشاء السجل في قاعدة البيانات الحقيقية (مثلاً clients service)
-      // مثال افتراضي: لو قاعدة بيانات موجودة يمكنك استدعاء db.createClient(rowData) ثم الحصول على external_id
-      // الآن: سنولد external_id تلقائياً إن لم يعطه الشيت، وأرجعها لكتابة العمود A في الشيت
-      const newExternalId = (rowData && rowData.external_id) ? String(rowData.external_id) : uuidv4();
-
-      // مثال: تسجيل بسيط (في Production استبدل بالـDB)
-      console.log(`Created new record with external_id=${newExternalId}`);
-
-      // العودة للـ Apps Script ليكتب external_id في العمود A للصف
-      return ok({ message: "record created", external_id: newExternalId, set_last_synced_by: "server" });
+      console.log(`🟢 [sheet:${sheetName}] ADD row=${row}`);
+      const result = await syncService.upsertClient(rowData || {});
+      return ok({ message: "record created_or_upserted", external_id: result.external_id, created: result.created, set_last_synced_by: "server" });
     }
 
-    // --- ACTION: EDIT ---
+    // EDIT (upsert)
     if (action === "edit") {
-      console.log(`🟡 [sheet:${sheetName}] EDIT row=${row} data=`, rowData);
-      const externalId = rowData && rowData.external_id ? String(rowData.external_id) : null;
-      if (!externalId) {
-        // cannot identify record — ask client to create first or handle as new
-        console.warn("Edit action received but no external_id present. Consider handling as add.");
-        return ok({ message: "no external_id provided; nothing updated" });
+      console.log(`🟡 [sheet:${sheetName}] EDIT row=${row}`);
+      const result = await syncService.upsertClient(rowData || {});
+      return ok({ message: "record upserted", external_id: result.external_id, created: result.created });
+    }
+
+    // REMOVE_ROWS -> ask Apps Script to run reconcile (or rely on scheduled reconcile)
+    if (action === "remove_rows") {
+      console.log(`🔴 [sheet:${sheetName}] REMOVE_ROWS received — server requests a reconcile.`);
+      return ok({ message: "remove_rows received; please send reconcile payload (apps script will call reconcileWithServer())" });
+    }
+
+    // RECONCILE -> payload.sheets (array) or payload.rows for single sheet
+    if (action === "reconcile") {
+      console.log(`🌀 [sheet:${sheetName}] RECONCILE payload`);
+      const sheetsPayload = payload.sheets || (payload.sheetName ? [{ sheetName: payload.sheetName, rows: payload.rows || [] }] : payload.sheets || []);
+      const summary = [];
+
+      for (const s of sheetsPayload) {
+        const sname = s.sheetName || "unknown";
+        const srows = s.rows || [];
+        const sheetExternalIds = new Set();
+
+        // Upsert each row
+        for (const r of srows) {
+          const data = r.data || r.rowData || {};
+          if (data.external_id) sheetExternalIds.add(String(data.external_id));
+          await syncService.upsertClient(data);
+        }
+
+        // Compare DB external ids for this sheet (in this simple service we don't separate by sheetName)
+        const dbExternalIds = await syncService.getAllExternalIds();
+        const deleted = [];
+        for (const id of dbExternalIds) {
+          if (!sheetExternalIds.has(id)) {
+            // mark deleted
+            await syncService.markClientDeleted(id);
+            deleted.push(id);
+          }
+        }
+
+        summary.push({ sheetName: sname, upserted: srows.length, markedDeleted: deleted.length });
       }
 
-      // TODO: ضع هنا منطق تحديث السجل في DB حسب externalId
-      // مثال: await db.updateByExternalId(externalId, rowData)
-
-      console.log(`Updated record external_id=${externalId}`);
-      return ok({ message: "record updated", external_id: externalId });
+      return ok({ message: "reconcile processed", summary });
     }
 
-    // --- ACTION: REMOVE_ROWS ---
-    if (action === "remove_rows") {
-      console.log(`🔴 [sheet:${sheetName}] REMOVE_ROWS received — request reconciliation`);
-      // onChange REMOVE_ROW لا يمدنا بأي بيانات عن الصف المحذوف.
-      // يجب أن تطلب من السكربت عمل reconcile (إرسال قائمة external_id الحالية) أو ننفّذ مقارنة من السيرفر.
-      // خيار: نقول للـApps Script أن يستدعي /api/sync/sheet-changes?action=reconcile (أو يستخدم reconcile payload)
-      return ok({ message: "remove_rows received; please call reconcile or server will run periodic reconcile" });
-    }
-
-    // --- ACTION: RECONCILE ---
-    if (action === "reconcile") {
-      console.log(`🌀 [sheet:${sheetName}] RECONCILE payload received`);
-      // payload may contain: rows (for single sheet) or sheets (array of sheets)
-      // Example minimal algorithm:
-      // 1) build set of external_ids received from sheet
-      // 2) compare with DB external_ids for that sheet -> deleted = inDB but not inSheet
-      // 3) create/update for rows with no external_id or changed data
-
-      // This area must be wired to your DB. Below is a placeholder log and success response.
-      // If payload.rows exists (single sheet), iterate it:
-      const allRows = payload.rows || payload.sheets || null;
-      console.log("Reconcile data preview:", Array.isArray(allRows) ? allRows.slice(0,5) : allRows);
-      // TODO: replace with real reconciliation code (DB operations)
-      return ok({ message: "reconcile processed (server stub)", processed: Array.isArray(allRows) ? allRows.length : 0 });
-    }
-
-    // If no action recognized:
-    console.log("⚪ Unrecognized or empty action field; returning generic OK.");
+    // fallback
+    console.log("⚪ Unrecognized action; returning ok.");
     return ok({ message: "action not recognized", received: payload });
 
   } catch (error) {
@@ -193,10 +184,6 @@ app.get("/healthz", (req, res) => res.status(200).json({ ok: true }));
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
   socket.on("disconnect", () => console.log("Client disconnected:", socket.id));
-  socket.on("whatsapp:status", (cb) => {
-    try { if (typeof cb === "function") cb({ connected: false }); } catch (e) {}
-  });
-  socket.on("whatsapp:request_qr", async () => console.log("Socket requested whatsapp QR"));
 });
 
 const PORT = Number(process.env.PORT || 5000);
