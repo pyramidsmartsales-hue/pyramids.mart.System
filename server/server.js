@@ -5,6 +5,8 @@ import morgan from "morgan";
 import http from "http";
 import { Server } from "socket.io";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 import { v4 as uuidv4 } from "uuid";
 
 import whatsappRouter from "./routes/whatsapp.js";
@@ -25,7 +27,7 @@ import { initWhatsApp } from "./services/whatsappWeb.js";
 import { restoreFromBackup } from "./services/sheetsPersistWrapper.js";
 import installGracefulShutdown from "./gracefulShutdown.js";
 
-// <-- IMPORT SYNC SERVICE (file provided separately)
+// <-- IMPORT SYNC SERVICE (تأكد أن هذا الملف موجود في server/services/syncService.js)
 import * as syncService from "./services/syncService.js";
 
 dotenv.config();
@@ -34,6 +36,19 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(morgan("dev"));
+
+// Ensure data folder exists (so syncService file-based DB won't fail if used)
+const DATA_DIR = path.join(process.cwd(), "server", "data");
+const SYNC_DB_PATH = path.join(DATA_DIR, "sync_db.json");
+try {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(SYNC_DB_PATH)) {
+    fs.writeFileSync(SYNC_DB_PATH, JSON.stringify({ clients: [] }, null, 2), { encoding: "utf8" });
+    console.log("[startup] created placeholder sync_db.json at", SYNC_DB_PATH);
+  }
+} catch (e) {
+  console.warn("[startup] could not ensure data dir/file:", e && e.message ? e.message : e);
+}
 
 // safety: global handlers to avoid process crash on unhandledRejection
 process.on("unhandledRejection", (reason, promise) => {
@@ -94,10 +109,9 @@ app.use("/api/sheets", sheetsTestRouter);
  *   { action: 'add'|'edit'|'remove_rows'|'reconcile', sheetName, row, rowData, rows, sheets, timestamp, editor }
  *
  * Behavior:
- *  - add: upsert -> returns external_id (created or existing)
- *  - edit: upsert by external_id (or create if missing)
- *  - remove_rows: request reconciliation (Apps Script will run reconcileWithServer)
- *  - reconcile: receives full sheets payload -> upsert all rows + mark missing external_ids as deleted
+ *  - add/edit: upsert -> returns external_id and emits socket 'clients:sync'
+ *  - remove_rows: ask Apps Script to run reconcile
+ *  - reconcile: upsert all rows, mark missing external_ids deleted, emit for upserts
  */
 app.post("/api/sync/sheet-changes", async (req, res) => {
   try {
@@ -112,17 +126,36 @@ app.post("/api/sync/sheet-changes", async (req, res) => {
     const ok = (data) => res.status(200).json(Object.assign({ ok: true }, data || {}));
     const err = (message, code = 500) => res.status(code).json({ ok: false, error: message });
 
+    // Helper to notify via socket and log
+    const notifyUpsert = (result, sname, actionName) => {
+      try {
+        const payload = { external_id: result.external_id, action: actionName, sheetName: sname };
+        io.emit("clients:sync", payload);
+        console.log("🔔 Emitted socket clients:sync:", payload);
+      } catch (e) {
+        console.warn("⚠️ socket emit failed:", e && e.message ? e.message : e);
+      }
+    };
+
     // ADD (create or upsert)
     if (action === "add") {
       console.log(`🟢 [sheet:${sheetName}] ADD row=${row}`);
       const result = await syncService.upsertClient(rowData || {});
-      return ok({ message: "record created_or_upserted", external_id: result.external_id, created: result.created, set_last_synced_by: "server" });
+      // notify frontends to reload
+      notifyUpsert(result, sheetName, result.created ? "created" : "upserted");
+      return ok({
+        message: "record created_or_upserted",
+        external_id: result.external_id,
+        created: result.created,
+        set_last_synced_by: "server"
+      });
     }
 
     // EDIT (upsert)
     if (action === "edit") {
       console.log(`🟡 [sheet:${sheetName}] EDIT row=${row}`);
       const result = await syncService.upsertClient(rowData || {});
+      notifyUpsert(result, sheetName, result.created ? "created" : "upserted");
       return ok({ message: "record upserted", external_id: result.external_id, created: result.created });
     }
 
@@ -135,7 +168,9 @@ app.post("/api/sync/sheet-changes", async (req, res) => {
     // RECONCILE -> payload.sheets (array) or payload.rows for single sheet
     if (action === "reconcile") {
       console.log(`🌀 [sheet:${sheetName}] RECONCILE payload`);
-      const sheetsPayload = payload.sheets || (payload.sheetName ? [{ sheetName: payload.sheetName, rows: payload.rows || [] }] : payload.sheets || []);
+      const sheetsPayload =
+        payload.sheets ||
+        (payload.sheetName ? [{ sheetName: payload.sheetName, rows: payload.rows || [] }] : payload.sheets || []);
       const summary = [];
 
       for (const s of sheetsPayload) {
@@ -143,11 +178,12 @@ app.post("/api/sync/sheet-changes", async (req, res) => {
         const srows = s.rows || [];
         const sheetExternalIds = new Set();
 
-        // Upsert each row
+        // Upsert each row and notify
         for (const r of srows) {
           const data = r.data || r.rowData || {};
           if (data.external_id) sheetExternalIds.add(String(data.external_id));
-          await syncService.upsertClient(data);
+          const result = await syncService.upsertClient(data);
+          notifyUpsert(result, sname, result.created ? "created" : "upserted");
         }
 
         // Compare DB external ids for this sheet (in this simple service we don't separate by sheetName)
@@ -158,6 +194,13 @@ app.post("/api/sync/sheet-changes", async (req, res) => {
             // mark deleted
             await syncService.markClientDeleted(id);
             deleted.push(id);
+            // optionally emit deletion notification
+            try {
+              io.emit("clients:sync", { external_id: id, action: "deleted", sheetName: sname });
+              console.log("🔔 Emitted socket clients:sync for deletion:", id);
+            } catch (e) {
+              console.warn("⚠️ socket emit failed for deletion:", e && e.message ? e.message : e);
+            }
           }
         }
 
@@ -170,7 +213,6 @@ app.post("/api/sync/sheet-changes", async (req, res) => {
     // fallback
     console.log("⚪ Unrecognized action; returning ok.");
     return ok({ message: "action not recognized", received: payload });
-
   } catch (error) {
     console.error("❌ Error in /api/sync/sheet-changes:", error && error.stack ? error.stack : error);
     return res.status(500).json({ ok: false, error: error && error.message ? error.message : String(error) });

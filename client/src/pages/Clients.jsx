@@ -1,7 +1,16 @@
 // client/src/pages/Clients.jsx
 import React, { useEffect, useState } from "react";
+import { io } from "socket.io-client";
 
 const API = import.meta.env.VITE_API_URL || "";
+
+// helper to compute socket URL: if API provided use it, otherwise same origin
+function getSocketUrl() {
+  if (API && API.trim()) {
+    return API.replace(/\/+$/, ""); // remove trailing slash
+  }
+  return window.location.origin;
+}
 
 export default function Clients() {
   const [clients, setClients] = useState([]);
@@ -12,6 +21,41 @@ export default function Clients() {
 
   useEffect(() => {
     fetchClients();
+    // establish socket connection and listeners
+    const socketUrl = getSocketUrl();
+    const socket = io(socketUrl, {
+      transports: ["websocket"],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 2000,
+    });
+
+    socket.on("connect", () => {
+      console.log("✅ socket connected:", socket.id, "to", socketUrl);
+    });
+
+    socket.on("disconnect", (reason) => {
+      console.warn("🔌 socket disconnected:", reason);
+    });
+
+    // when server notifies that clients changed, reload the list
+    socket.on("clients:sync", (payload) => {
+      console.log("🔔 clients:sync received:", payload);
+      // Option: you could update state incrementally based on payload.action,
+      // but simplest and safe approach is to refetch the full list:
+      fetchClients();
+    });
+
+    // cleanup on unmount
+    return () => {
+      try {
+        socket.off("clients:sync");
+        socket.disconnect();
+      } catch (e) {
+        // ignore
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function fetchClients() {
@@ -74,6 +118,7 @@ export default function Clients() {
         body: JSON.stringify(payload)
       });
       if (!res.ok) throw new Error("Failed to add");
+      // after successful create, fetch clients (server should emit socket as well)
       await fetchClients();
       setForm({ name: "", phone: "", area: "", notes: "" });
     } catch (err) {
