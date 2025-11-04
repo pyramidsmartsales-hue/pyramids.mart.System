@@ -1,15 +1,12 @@
 // client/src/pages/Clients.jsx
 import React, { useEffect, useState } from "react";
-import { io } from "socket.io-client";
+import { subscribe } from "../socket"; // استورد subscribe من socket.js
 
 const API = import.meta.env.VITE_API_URL || "";
 
-// helper to compute socket URL: if API provided use it, otherwise same origin
-function getSocketUrl() {
-  if (API && API.trim()) {
-    return API.replace(/\/+$/, ""); // remove trailing slash
-  }
-  return window.location.origin;
+// helper to compute socket URL (used only for display)
+function getApiUrlForDisplay() {
+  return API || window.location.origin;
 }
 
 export default function Clients() {
@@ -21,39 +18,17 @@ export default function Clients() {
 
   useEffect(() => {
     fetchClients();
-    // establish socket connection and listeners
-    const socketUrl = getSocketUrl();
-    const socket = io(socketUrl, {
-      transports: ["websocket"],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 2000,
-    });
 
-    socket.on("connect", () => {
-      console.log("✅ socket connected:", socket.id, "to", socketUrl);
-    });
-
-    socket.on("disconnect", (reason) => {
-      console.warn("🔌 socket disconnected:", reason);
-    });
-
-    // when server notifies that clients changed, reload the list
-    socket.on("clients:sync", (payload) => {
+    // اشترك في حدث clients:sync عبر الدالة المساعدة
+    const off = subscribe("clients:sync", (payload) => {
       console.log("🔔 clients:sync received:", payload);
-      // Option: you could update state incrementally based on payload.action,
-      // but simplest and safe approach is to refetch the full list:
+      // أبسط طريقة: إعادة جلب القائمة كاملة
       fetchClients();
     });
 
-    // cleanup on unmount
+    // تنظيف الاشتراك عند تفكيك المكوّن
     return () => {
-      try {
-        socket.off("clients:sync");
-        socket.disconnect();
-      } catch (e) {
-        // ignore
-      }
+      try { off(); } catch (e) {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -63,13 +38,13 @@ export default function Clients() {
     setError(null);
     try {
       const res = await fetch(`${API}/api/clients`);
-      if (!res.ok) throw new Error("Failed");
+      if (!res.ok) throw new Error("Failed to fetch clients");
       const json = await res.json();
       const data = json.data?.data ?? json.data ?? json.clients ?? json;
       setClients(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error("fetch clients failed", e);
-      setError("فشل تحميل قائمة العملاء. تحقق من وحدة التحكم (Console).");
+      setError("فشل تحميل قائمة العملاء. راجع وحدة التحكم (Console).");
     } finally {
       setLoading(false);
     }
@@ -79,16 +54,12 @@ export default function Clients() {
     setForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
   }
 
-  // ensure international code present; default +254 if missing (you can change default)
   function normalizePhone(phone) {
     if (!phone) return "";
     const p = phone.trim();
     if (p.startsWith("+")) return p;
-    // if starts with 0 replace with +254 (common for Kenya) - this is heuristic
     if (p.startsWith("0")) return "+254" + p.slice(1);
-    // if looks like local number length 9 or 10, prefix +254
     if (/^\d{9,10}$/.test(p)) return "+254" + p;
-    // otherwise return as-is
     return p;
   }
 
@@ -109,7 +80,7 @@ export default function Clients() {
         phone: normalizePhone(form.phone),
         area: form.area || "",
         notes: form.notes || "",
-        points: 0 // init points
+        points: 0
       };
 
       const res = await fetch(`${API}/api/clients`, {
@@ -118,13 +89,11 @@ export default function Clients() {
         body: JSON.stringify(payload)
       });
       if (!res.ok) throw new Error("Failed to add");
-      // after successful create, fetch clients (server should emit socket as well)
-      await fetchClients();
+      await fetchClients(); // after create, refresh list (server will also emit)
       setForm({ name: "", phone: "", area: "", notes: "" });
     } catch (err) {
       console.error("Add client failed:", err);
-      const msg = err?.message || "فشل الحفظ";
-      setError(String(msg));
+      setError(String(err?.message || "فشل الحفظ"));
     } finally {
       setSaving(false);
     }
@@ -197,7 +166,7 @@ export default function Clients() {
         )}
       </div>
 
-      <div className="mt-4 text-xs text-gray-500">عنوان API الحالي: <span className="font-mono">{API}</span></div>
+      <div className="mt-4 text-xs text-gray-500">عنوان API الحالي: <span className="font-mono">{getApiUrlForDisplay()}</span></div>
     </div>
   );
 }
