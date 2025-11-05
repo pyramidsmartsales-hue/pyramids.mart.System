@@ -30,6 +30,9 @@ import installGracefulShutdown from "./gracefulShutdown.js";
 // <-- IMPORT SYNC SERVICE (تأكد أن هذا الملف موجود في server/services/syncService.js)
 import * as syncService from "./services/syncService.js";
 
+// <-- IMPORT sheetsPush service (new) to push rows to Google Sheets
+import * as sheetsPush from "./services/sheetsPush.js";
+
 dotenv.config();
 
 const app = express();
@@ -141,6 +144,28 @@ app.post("/api/sync/sheet-changes", async (req, res) => {
     if (action === "add") {
       console.log(`🟢 [sheet:${sheetName}] ADD row=${row}`);
       const result = await syncService.upsertClient(rowData || {});
+
+      // --- push to Google Sheet so sheet and server stay in sync (App -> Sheet)
+      try {
+        const rowToPush = {
+          external_id: result.external_id,
+          last_modified: new Date().toISOString(),
+          last_synced_by: "server",
+          status: result.status || "",
+          name: result.name || rowData?.name || "",
+          phone: result.phone || rowData?.phone || "",
+          country: result.country || rowData?.country || "",
+          city: result.city || rowData?.city || "",
+          address: result.address || rowData?.address || "",
+          notes: result.notes || rowData?.notes || "",
+          points: result.points ?? rowData?.points ?? ""
+        };
+        await sheetsPush.upsertRowToSheet("Clients", rowToPush);
+        console.log("✅ pushed row to sheet for external_id", result.external_id);
+      } catch (pushErr) {
+        console.warn("⚠️ Failed to push to sheet (ADD):", pushErr && pushErr.message ? pushErr.message : pushErr);
+      }
+
       // notify frontends to reload
       notifyUpsert(result, sheetName, result.created ? "created" : "upserted");
       return ok({
@@ -155,6 +180,28 @@ app.post("/api/sync/sheet-changes", async (req, res) => {
     if (action === "edit") {
       console.log(`🟡 [sheet:${sheetName}] EDIT row=${row}`);
       const result = await syncService.upsertClient(rowData || {});
+
+      // push to sheet to reflect server/app changes (if any)
+      try {
+        const rowToPush = {
+          external_id: result.external_id,
+          last_modified: new Date().toISOString(),
+          last_synced_by: "server",
+          status: result.status || "",
+          name: result.name || rowData?.name || "",
+          phone: result.phone || rowData?.phone || "",
+          country: result.country || rowData?.country || "",
+          city: result.city || rowData?.city || "",
+          address: result.address || rowData?.address || "",
+          notes: result.notes || rowData?.notes || "",
+          points: result.points ?? rowData?.points ?? ""
+        };
+        await sheetsPush.upsertRowToSheet("Clients", rowToPush);
+        console.log("✅ pushed updated row to sheet for external_id", result.external_id);
+      } catch (pushErr) {
+        console.warn("⚠️ Failed to push to sheet (EDIT):", pushErr && pushErr.message ? pushErr.message : pushErr);
+      }
+
       notifyUpsert(result, sheetName, result.created ? "created" : "upserted");
       return ok({ message: "record upserted", external_id: result.external_id, created: result.created });
     }
@@ -183,6 +230,28 @@ app.post("/api/sync/sheet-changes", async (req, res) => {
           const data = r.data || r.rowData || {};
           if (data.external_id) sheetExternalIds.add(String(data.external_id));
           const result = await syncService.upsertClient(data);
+
+          // push to sheet for this upsert (keeps formatting/last_synced_by consistent)
+          try {
+            const rowToPush = {
+              external_id: result.external_id,
+              last_modified: new Date().toISOString(),
+              last_synced_by: "server",
+              status: result.status || "",
+              name: result.name || data.name || "",
+              phone: result.phone || data.phone || "",
+              country: result.country || data.country || "",
+              city: result.city || data.city || "",
+              address: result.address || data.address || "",
+              notes: result.notes || data.notes || "",
+              points: result.points ?? data.points ?? ""
+            };
+            await sheetsPush.upsertRowToSheet(sname, rowToPush);
+            console.log("✅ reconcile pushed row to sheet for", result.external_id);
+          } catch (pushErr) {
+            console.warn("⚠️ reconcile push to sheet failed:", pushErr && pushErr.message ? pushErr.message : pushErr);
+          }
+
           notifyUpsert(result, sname, result.created ? "created" : "upserted");
         }
 
@@ -191,9 +260,18 @@ app.post("/api/sync/sheet-changes", async (req, res) => {
         const deleted = [];
         for (const id of dbExternalIds) {
           if (!sheetExternalIds.has(id)) {
-            // mark deleted
+            // mark deleted in DB
             await syncService.markClientDeleted(id);
             deleted.push(id);
+
+            // try to mark deleted in sheet as well (status column or clear row)
+            try {
+              await sheetsPush.markRowDeletedInSheet(sname, id);
+              console.log("✅ marked row deleted in sheet for external_id", id);
+            } catch (pushDelErr) {
+              console.warn("⚠️ failed to mark row deleted in sheet for", id, pushDelErr && pushDelErr.message ? pushDelErr.message : pushDelErr);
+            }
+
             // optionally emit deletion notification
             try {
               io.emit("clients:sync", { external_id: id, action: "deleted", sheetName: sname });
