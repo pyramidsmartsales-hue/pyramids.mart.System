@@ -35,6 +35,72 @@ import * as sheetsPush from "./services/sheetsPush.js";
 
 dotenv.config();
 
+/**
+ * ====== Credentials bootstrap (Base64 -> file)
+ *
+ * Three supported ways (priority):
+ * 1) process.env.GOOGLE_CREDENTIALS_FILE -> path to JSON file on filesystem
+ * 2) process.env.GOOGLE_CREDENTIALS_JSON -> raw JSON string (not recommended)
+ * 3) process.env.GOOGLE_CREDENTIALS_JSON_B64 -> Base64 encoded JSON (recommended for envs)
+ *
+ * If GOOGLE_CREDENTIALS_JSON_B64 is present and GOOGLE_CREDENTIALS_FILE is not set,
+ * we decode it and write to server/data/google-service-key.json and set GOOGLE_CREDENTIALS_FILE to that path.
+ */
+(function ensureGoogleCredentialsFile() {
+  try {
+    const dataDir = path.join(process.cwd(), "server", "data");
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+    // If explicit file already set and exists, ok
+    if (process.env.GOOGLE_CREDENTIALS_FILE && fs.existsSync(process.env.GOOGLE_CREDENTIALS_FILE)) {
+      console.log("[startup] GOOGLE_CREDENTIALS_FILE set to", process.env.GOOGLE_CREDENTIALS_FILE);
+      return;
+    }
+
+    // If raw JSON provided, write it
+    if (process.env.GOOGLE_CREDENTIALS_JSON && !process.env.GOOGLE_CREDENTIALS_FILE) {
+      try {
+        const outPath = path.join(dataDir, "google-service-key.json");
+        fs.writeFileSync(outPath, process.env.GOOGLE_CREDENTIALS_JSON, { encoding: "utf8" });
+        process.env.GOOGLE_CREDENTIALS_FILE = outPath;
+        console.log("[startup] wrote GOOGLE_CREDENTIALS_JSON ->", outPath);
+        return;
+      } catch (e) {
+        console.warn("[startup] failed to write GOOGLE_CREDENTIALS_JSON:", e && e.message ? e.message : e);
+      }
+    }
+
+    // If Base64 provided, decode and write it
+    if (process.env.GOOGLE_CREDENTIALS_JSON_B64 && !process.env.GOOGLE_CREDENTIALS_FILE) {
+      try {
+        const decoded = Buffer.from(process.env.GOOGLE_CREDENTIALS_JSON_B64, "base64");
+        const outPath = path.join(dataDir, "google-service-key.json");
+        fs.writeFileSync(outPath, decoded);
+        process.env.GOOGLE_CREDENTIALS_FILE = outPath;
+        console.log("[startup] wrote GOOGLE_CREDENTIALS_JSON_B64 ->", outPath);
+        return;
+      } catch (e) {
+        console.warn("[startup] failed to decode/write GOOGLE_CREDENTIALS_JSON_B64:", e && e.message ? e.message : e);
+      }
+    }
+
+    // If we reach here, try to detect if a default file exists in repository
+    const candidate = path.join(process.cwd(), "server", "google-service-key-new.json");
+    if (!process.env.GOOGLE_CREDENTIALS_FILE && fs.existsSync(candidate)) {
+      process.env.GOOGLE_CREDENTIALS_FILE = candidate;
+      console.log("[startup] using local credentials file ->", candidate);
+      return;
+    }
+
+    // Not found — warn only (we don't throw so server can still run)
+    if (!process.env.GOOGLE_CREDENTIALS_FILE) {
+      console.warn("[startup] Google credentials not provided (set GOOGLE_CREDENTIALS_FILE or GOOGLE_CREDENTIALS_JSON_B64)");
+    }
+  } catch (e) {
+    console.warn("[startup] credentials bootstrap error:", e && e.message ? e.message : e);
+  }
+})();
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
