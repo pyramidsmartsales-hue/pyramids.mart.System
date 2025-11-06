@@ -27,7 +27,7 @@ import { initWhatsApp } from "./services/whatsappWeb.js";
 import { restoreFromBackup } from "./services/sheetsPersistWrapper.js";
 import installGracefulShutdown from "./gracefulShutdown.js";
 
-// <-- IMPORT SYNC SERVICE (تأكد أن هذا الملف موجود في server/services/syncService.js)
+// <-- IMPORT SYNC SERVICE
 import * as syncService from "./services/syncService.js";
 
 // <-- IMPORT sheetsPush service (new) to push rows to Google Sheets
@@ -38,13 +38,12 @@ dotenv.config();
 /**
  * ====== Credentials bootstrap (Base64 -> file)
  *
- * Three supported ways (priority):
+ * Priority (three ways):
  * 1) process.env.GOOGLE_CREDENTIALS_FILE -> path to JSON file on filesystem
- * 2) process.env.GOOGLE_CREDENTIALS_JSON -> raw JSON string (not recommended)
+ * 2) process.env.GOOGLE_CREDENTIALS_JSON -> raw JSON string
  * 3) process.env.GOOGLE_CREDENTIALS_JSON_B64 -> Base64 encoded JSON (recommended for envs)
  *
- * If GOOGLE_CREDENTIALS_JSON_B64 is present and GOOGLE_CREDENTIALS_FILE is not set,
- * we decode it and write to server/data/google-service-key.json and set GOOGLE_CREDENTIALS_FILE to that path.
+ * Also: if GOOGLE_CREDENTIALS_FILE is set but path doesn't exist, try /etc/secrets/<basename> (Render)
  */
 (function ensureGoogleCredentialsFile() {
   try {
@@ -55,6 +54,19 @@ dotenv.config();
     if (process.env.GOOGLE_CREDENTIALS_FILE && fs.existsSync(process.env.GOOGLE_CREDENTIALS_FILE)) {
       console.log("[startup] GOOGLE_CREDENTIALS_FILE set to", process.env.GOOGLE_CREDENTIALS_FILE);
       return;
+    }
+
+    // If GOOGLE_CREDENTIALS_FILE set but path not found, try Render secret default dir /etc/secrets/<basename>
+    if (process.env.GOOGLE_CREDENTIALS_FILE && !fs.existsSync(process.env.GOOGLE_CREDENTIALS_FILE)) {
+      const basename = path.basename(process.env.GOOGLE_CREDENTIALS_FILE);
+      const candidate = path.join("/etc/secrets", basename);
+      if (fs.existsSync(candidate)) {
+        process.env.GOOGLE_CREDENTIALS_FILE = candidate;
+        console.log("[startup] GOOGLE_CREDENTIALS_FILE not found at provided path; using", candidate);
+        return;
+      } else {
+        console.warn("[startup] GOOGLE_CREDENTIALS_FILE set but file not found at", process.env.GOOGLE_CREDENTIALS_FILE);
+      }
     }
 
     // If raw JSON provided, write it
@@ -84,12 +96,30 @@ dotenv.config();
       }
     }
 
-    // If we reach here, try to detect if a default file exists in repository
-    const candidate = path.join(process.cwd(), "server", "google-service-key-new.json");
-    if (!process.env.GOOGLE_CREDENTIALS_FILE && fs.existsSync(candidate)) {
-      process.env.GOOGLE_CREDENTIALS_FILE = candidate;
-      console.log("[startup] using local credentials file ->", candidate);
+    // If repo contains a local candidate file server/google-service-key-new.json (for local dev)
+    const candidateLocal = path.join(process.cwd(), "server", "google-service-key-new.json");
+    if (!process.env.GOOGLE_CREDENTIALS_FILE && fs.existsSync(candidateLocal)) {
+      process.env.GOOGLE_CREDENTIALS_FILE = candidateLocal;
+      console.log("[startup] using local credentials file ->", candidateLocal);
       return;
+    }
+
+    // Also try /etc/secrets/ if someone uploaded secret file there but didn't set GOOGLE_CREDENTIALS_FILE env
+    if (!process.env.GOOGLE_CREDENTIALS_FILE) {
+      try {
+        const etcSecrets = "/etc/secrets";
+        if (fs.existsSync(etcSecrets)) {
+          const files = fs.readdirSync(etcSecrets).filter((f) => f.toLowerCase().endsWith(".json"));
+          if (files.length === 1) {
+            const found = path.join(etcSecrets, files[0]);
+            process.env.GOOGLE_CREDENTIALS_FILE = found;
+            console.log("[startup] auto-detected credentials in /etc/secrets ->", found);
+            return;
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
     }
 
     // Not found — warn only (we don't throw so server can still run)
