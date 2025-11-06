@@ -1,57 +1,25 @@
 // client/src/socket.js
 import { io } from "socket.io-client";
 
-const API = import.meta.env.VITE_API_URL || "";
-function getSocketUrl() {
-  if (API && API.trim()) return API.replace(/\/+$/, "");
-  return window.location.origin;
-}
+const API = process.env.REACT_APP_API_URL || "";
+const base = (API && API.trim()) ? API.replace(/\/+$/, "") : window.location.origin;
 
-const SOCKET_URL = getSocketUrl();
-console.log("[socket] connecting to", SOCKET_URL);
+console.log("[socket] connecting to", base);
 
-export const socket = io(SOCKET_URL, {
+const socket = io(base, {
   path: "/socket.io",
-  transports: ["websocket", "polling"], // allow polling as fallback
-  upgrade: true,
+  transports: ["websocket", "polling"],
+  autoConnect: true,
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 2000,
   timeout: 20000,
-  autoConnect: true,
 });
 
-// Logging (خفف أو أزل في الإنتاج)
-socket.on("connect", () => {
-  console.log("[socket] connected:", socket.id);
-});
-socket.on("connect_error", (err) => {
-  console.warn("[socket] connect_error:", err && err.message ? err.message : err);
-});
-socket.on("reconnect_attempt", (n) => {
-  console.log("[socket] reconnect attempt", n);
-});
-socket.on("reconnect_failed", () => {
-  console.error("[socket] reconnect failed");
-});
-socket.on("disconnect", (reason) => {
-  console.warn("[socket] disconnected:", reason);
-});
+socket.on("connect", () => console.log("[socket] connected", socket.id));
+socket.on("disconnect", (reason) => console.log("[socket] disconnected", reason));
+socket.on("connect_error", (err) => console.warn("[socket] connect_error", err && err.message));
+socket.on("reconnect_attempt", (n) => console.log("[socket] reconnect attempt", n));
+socket.on("reconnect_failed", () => console.error("[socket] reconnect failed"));
 
-/**
- * Helper subscribe: returns an "off" function for cleanup.
- * Usage:
- *   const off = subscribe('clients:sync', handler);
- *   off(); // to unsubscribe
- */
-export function subscribe(event, handler) {
-  if (!socket) return () => {};
-  socket.on(event, handler);
-  return () => {
-    try {
-      socket.off(event, handler);
-    } catch (e) {
-      // ignore
-    }
-  };
-}
+export default socket;

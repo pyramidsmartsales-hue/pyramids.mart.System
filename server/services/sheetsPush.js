@@ -1,117 +1,199 @@
 // server/services/sheetsPush.js
-import fs from "fs";
-import { google } from "googleapis";
+// Minimal, robust helper to upsert rows and mark deleted rows in Google Sheets
+// Supports GOOGLE_CREDENTIALS_FILE (path), GOOGLE_CREDENTIALS_JSON, GOOGLE_CREDENTIALS_JSON_B64 (base64)
+// Uses environment variable SHEETS_ID or SHEET_ID or SHEETS_ID.
 
-const SHEET_ID = process.env.SHEET_ID || "";
-const CREDENTIALS_FILE = process.env.GOOGLE_CREDENTIALS_FILE || null;
-const CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON || null;
-const HEADER_ROW = Number(process.env.SHEET_HEADER_ROW || 1);
+const fs = require('fs');
+const { google } = require('googleapis');
 
-function getAuthClient() {
-  let creds;
-  if (CREDENTIALS_JSON) {
-    creds = JSON.parse(CREDENTIALS_JSON);
-  } else if (CREDENTIALS_FILE && fs.existsSync(CREDENTIALS_FILE)) {
-    creds = JSON.parse(fs.readFileSync(CREDENTIALS_FILE, "utf8"));
-  } else {
-    throw new Error("Google credentials not provided (GOOGLE_CREDENTIALS_FILE or GOOGLE_CREDENTIALS_JSON)");
+const SHEET_ID = process.env.SHEETS_ID || process.env.SHEET_ID || process.env.GOOGLE_SHEETS_ID || '';
+
+function getCredentialsObject() {
+  // 1) file
+  const keyFile = process.env.GOOGLE_CREDENTIALS_FILE;
+  if (keyFile && fs.existsSync(keyFile)) {
+    try {
+      const raw = fs.readFileSync(keyFile, 'utf8');
+      return JSON.parse(raw);
+    } catch (e) {
+      throw new Error('Failed to parse GOOGLE_CREDENTIALS_FILE: ' + (e.message || e));
+    }
   }
-
-  const jwt = new google.auth.JWT(
-    creds.client_email,
-    undefined,
-    creds.private_key,
-    ["https://www.googleapis.com/auth/spreadsheets"]
-  );
-  return jwt;
-}
-
-async function getSheetHeaders(sheets, sheetName) {
-  const range = `${sheetName}!${HEADER_ROW}:${HEADER_ROW}`;
-  const resp = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range });
-  const row = (resp.data.values && resp.data.values[0]) || [];
-  return row;
-}
-
-async function findRowByExternalId(sheets, sheetName, externalId) {
-  const range = `${sheetName}!A${HEADER_ROW + 1}:A`;
-  const resp = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range });
-  const values = resp.data.values || [];
-  for (let i = 0; i < values.length; i++) {
-    const v = values[i] && values[i][0] ? String(values[i][0]) : "";
-    if (v === externalId) {
-      const rowNumber = HEADER_ROW + 1 + i;
-      return { rowNumber };
+  // 2) raw JSON env
+  if (process.env.GOOGLE_CREDENTIALS_JSON) {
+    try { return JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON); } catch (e) { throw new Error('Invalid JSON in GOOGLE_CREDENTIALS_JSON'); }
+  }
+  // 3) base64 env
+  if (process.env.GOOGLE_CREDENTIALS_JSON_B64) {
+    try {
+      const decoded = Buffer.from(process.env.GOOGLE_CREDENTIALS_JSON_B64, 'base64').toString('utf8');
+      return JSON.parse(decoded);
+    } catch (e) {
+      throw new Error('Invalid GOOGLE_CREDENTIALS_JSON_B64 (not base64 or invalid JSON)');
     }
   }
   return null;
 }
 
-function mapRowDataToRowArray(headers, rowData) {
-  return headers.map(h => (rowData[h] == null ? "" : String(rowData[h])));
+async function getSheetsClientOrThrow() {
+  if (!SHEET_ID) throw new Error('SHEET_ID (or SHEETS_ID / GOOGLE_SHEETS_ID) environment variable not set.');
+  const creds = getCredentialsObject();
+  if (!creds) throw new Error('No key or keyFile set. Set GOOGLE_CREDENTIALS_FILE or GOOGLE_CREDENTIALS_JSON(_B64).');
+  if (!creds.client_email || !creds.private_key) throw new Error('Service account JSON missing client_email or private_key.');
+
+  // create JWT auth client
+  const jwt = new google.auth.JWT(creds.client_email, null, creds.private_key, ['https://www.googleapis.com/auth/spreadsheets']);
+  await jwt.authorize();
+  const sheets = google.sheets({ version: 'v4', auth: jwt });
+  return { sheets, spreadsheetId: SHEET_ID };
 }
 
-export async function upsertRowToSheet(sheetName, rowData = {}) {
-  if (!rowData || !rowData.external_id) throw new Error("rowData.external_id is required");
-  const auth = getAuthClient();
-  await auth.authorize();
-  const sheets = google.sheets({ version: "v4", auth });
+async function readSheetValues(sheets, sheetName) {
+  const resp = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: sheetName });
+  const values = resp.data.values || [];
+  if (values.length === 0) return { header: [], rows: [] };
+  const header = values[0].map(h => (h || '').toString().trim());
+  const rows = values.slice(1);
+  return { header, rows };
+}
 
-  const headers = await getSheetHeaders(sheets, sheetName);
-  if (!headers || headers.length === 0 || headers[0].toLowerCase() !== "external_id") {
-    throw new Error(`Header row for sheet "${sheetName}" must have 'external_id' as first column`);
-  }
+/**
+ * upsertRowToSheet(sheetName, rowObj)
+ * rowObj: object with keys matching header names (e.g. external_id, name, phone, etc.)
+ * Behavior:
+ *  - If header contains "external_id" column: find row with same external_id and UPDATE, else APPEND.
+ *  - If header does not contain external_id: append a default-order row.
+ */
+async function upsertRowToSheet(sheetName, rowObj = {}) {
+  try {
+    const { sheets } = await getSheetsClientOrThrow();
+    const { header, rows } = await readSheetValues(sheets, sheetName);
 
-  const found = await findRowByExternalId(sheets, sheetName, String(rowData.external_id));
-  const rowArray = mapRowDataToRowArray(headers, rowData);
+    const externalIdx = header.findIndex(h => h.toLowerCase() === 'external_id');
+    const makeRow = (obj) => header.map(h => (obj[h] !== undefined ? String(obj[h]) : ''));
 
-  if (found && found.rowNumber) {
-    const lastColLetter = String.fromCharCode(65 + headers.length - 1);
-    const range = `${sheetName}!A${found.rowNumber}:${lastColLetter}${found.rowNumber}`;
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range,
-      valueInputOption: "RAW",
-      requestBody: { values: [rowArray] }
-    });
-    return { updated: true, rowNumber: found.rowNumber };
-  } else {
-    const appendRange = `${sheetName}!A${HEADER_ROW + 1}`;
-    const resp = await sheets.spreadsheets.values.append({
-      spreadsheetId: SHEET_ID,
-      range: appendRange,
-      valueInputOption: "RAW",
-      insertDataOption: "INSERT_ROWS",
-      requestBody: { values: [rowArray] }
-    });
-    return { appended: true, result: resp.data };
+    if (externalIdx === -1) {
+      // fallback: append default-order row
+      const appendRow = [
+        rowObj.external_id || '',
+        rowObj.last_modified || '',
+        rowObj.last_synced_by || '',
+        rowObj.status || '',
+        rowObj.name || '',
+        rowObj.phone || '',
+        rowObj.country || '',
+        rowObj.city || '',
+        rowObj.address || '',
+        rowObj.notes || '',
+        (rowObj.points !== undefined ? rowObj.points : '')
+      ];
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: sheetName,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        resource: { values: [appendRow] }
+      });
+      console.log('[sheetsPush] Appended row (no external_id column).');
+      return true;
+    }
+
+    // find matching external_id
+    let foundRowIndex = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if ((r[externalIdx] || '') === (rowObj.external_id || '')) {
+        foundRowIndex = i;
+        break;
+      }
+    }
+
+    const dataRow = makeRow(rowObj);
+
+    if (foundRowIndex >= 0) {
+      const sheetRowNumber = 2 + foundRowIndex; // header is row 1
+      const updateRange = `${sheetName}!A${sheetRowNumber}`;
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: updateRange,
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: [dataRow] }
+      });
+      console.log('[sheetsPush] Updated sheet row', sheetRowNumber, 'for external_id', rowObj.external_id);
+      return true;
+    } else {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: sheetName,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        resource: { values: [dataRow] }
+      });
+      console.log('[sheetsPush] Appended new row for external_id', rowObj.external_id);
+      return true;
+    }
+  } catch (e) {
+    console.warn('[sheetsPush] upsertRowToSheet error:', e && e.message ? e.message : e);
+    throw e;
   }
 }
 
-export async function markRowDeletedInSheet(sheetName, externalId) {
-  const auth = getAuthClient();
-  await auth.authorize();
-  const sheets = google.sheets({ version: "v4", auth });
+/**
+ * markRowDeletedInSheet(sheetName, externalId)
+ * - Finds row by external_id, sets status='deleted' if status column exists, otherwise clears the row.
+ */
+async function markRowDeletedInSheet(sheetName, externalId) {
+  try {
+    const { sheets } = await getSheetsClientOrThrow();
+    const { header, rows } = await readSheetValues(sheets, sheetName);
+    const externalIdx = header.findIndex(h => h.toLowerCase() === 'external_id');
+    const statusIdx = header.findIndex(h => h.toLowerCase() === 'status');
 
-  const headers = await getSheetHeaders(sheets, sheetName);
-  const found = await findRowByExternalId(sheets, sheetName, String(externalId));
-  if (!found) return { found: false };
+    if (externalIdx === -1) {
+      console.log('[sheetsPush] Cannot mark deleted: no external_id column.');
+      throw new Error('No external_id column');
+    }
 
-  const statusIdx = headers.findIndex(h => String(h).toLowerCase() === "status");
-  if (statusIdx >= 0) {
-    const colLetter = String.fromCharCode(65 + statusIdx);
-    const range = `${sheetName}!${colLetter}${found.rowNumber}`;
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range,
-      valueInputOption: "RAW",
-      requestBody: { values: [["deleted"]] }
-    });
-    return { markedDeleted: true, rowNumber: found.rowNumber };
-  } else {
-    const lastColLetter = String.fromCharCode(65 + headers.length - 1);
-    const clearRange = `${sheetName}!A${found.rowNumber}:${lastColLetter}${found.rowNumber}`;
-    await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: clearRange });
-    return { cleared: true, rowNumber: found.rowNumber };
+    let foundRowIndex = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if ((rows[i][externalIdx] || '') === externalId) {
+        foundRowIndex = i;
+        break;
+      }
+    }
+    if (foundRowIndex === -1) {
+      console.log('[sheetsPush] Row with external_id not found in sheet:', externalId);
+      return false;
+    }
+
+    const sheetRowNumber = 2 + foundRowIndex;
+    if (statusIdx !== -1) {
+      const colLetter = String.fromCharCode('A'.charCodeAt(0) + statusIdx);
+      const range = `${sheetName}!${colLetter}${sheetRowNumber}`;
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range,
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: [['deleted']] }
+      });
+      console.log('[sheetsPush] Marked status=deleted for row', sheetRowNumber, 'external_id', externalId);
+      return true;
+    } else {
+      const range = `${sheetName}!A${sheetRowNumber}:Z${sheetRowNumber}`;
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId: SHEET_ID,
+        range
+      });
+      console.log('[sheetsPush] Cleared row', sheetRowNumber, 'for external_id', externalId);
+      return true;
+    }
+  } catch (e) {
+    console.warn('[sheetsPush] markRowDeletedInSheet error:', e && e.message ? e.message : e);
+    throw e;
   }
 }
+
+module.exports = {
+  upsertRowToSheet,
+  markRowDeletedInSheet
+};
