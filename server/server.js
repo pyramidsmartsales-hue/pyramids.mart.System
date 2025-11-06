@@ -1,6 +1,6 @@
 // server/server.js
-// نسخة ESM محسّنة — تحميل روترات مرن (يدعم factory(), factory(app), factory(router), factory(express))
-// يضبط GOOGLE_APPLICATION_CREDENTIALS تلقائياً للمكتبات الرسمية.
+// كامل وجاهز للاستبدال
+// ESM, flexible router loading, Google credentials bootstrap, Sheets poller -> app deletions
 
 import fs from 'fs';
 import path from 'path';
@@ -10,6 +10,7 @@ import morgan from 'morgan';
 import cors from 'cors';
 import { Server } from 'socket.io';
 import { fileURLToPath } from 'url';
+import process from 'process';
 
 // __dirname في ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -22,6 +23,7 @@ const __dirname = path.dirname(__filename);
     const envProvided = process.env.GOOGLE_CREDENTIALS_FILE || defaultTarget;
     let targetPath = envProvided;
 
+    // إذا المستخدم مرّر اسم ملف نسبي في env، نضعه تحت /etc/secrets للحاوية
     if (process.env.GOOGLE_CREDENTIALS_FILE && !process.env.GOOGLE_CREDENTIALS_FILE.startsWith('/')) {
       targetPath = path.posix.join('/etc/secrets', path.basename(process.env.GOOGLE_CREDENTIALS_FILE));
     }
@@ -60,25 +62,17 @@ const __dirname = path.dirname(__filename);
   }
 })();
 
-/* ------------------ Helper: تحقق مما إذا كان كائنًا Router أو Middleware صالح ------------------ */
+/* ------------------ Helpers for router loading ------------------ */
 function isValidRouter(obj) {
   if (!obj) return false;
-  // Express Router is a function (callable) and usually has 'stack' array or 'use' function.
   if (typeof obj === 'function') return true;
   if (typeof obj === 'object') {
-    if (Array.isArray(obj.stack) && obj.stack.length >= 0) return true;
+    if (Array.isArray(obj.stack)) return true;
     if (typeof obj.use === 'function' || typeof obj.handle === 'function') return true;
   }
   return false;
 }
 
-/* ------------------ Helper: تحميل روترات بمرونة ------------------ */
-/**
- * يجرب استيراد الموديول وإرجاع Router صالح بعد محاولة استدعائه بطرق متعددة.
- * @param {string} relPath مسار نسبي (مثال './routes/clients.js')
- * @param {object} opts خيارات (يمكن تمرير app أو غيره)
- * @returns {Promise<null|any>}
- */
 async function loadRouterFlexibly(relPath, opts = {}) {
   try {
     const mod = await import(relPath).catch((e) => {
@@ -89,16 +83,12 @@ async function loadRouterFlexibly(relPath, opts = {}) {
 
     const exported = mod.default ?? mod;
 
-    // إذا المصدر نفسه يبدو كـ Router صالح، رجّعه فوراً
     if (isValidRouter(exported)) {
       return exported;
     }
 
-    // نجهز بدائل للتمرير إلى الدالة factory إن كانت دالة:
-    const routerCandidates = [];
     const expressRouter = express.Router();
 
-    // إذا كانت exported دالة نحاول استدعاءها بعدة أنماط
     if (typeof exported === 'function') {
       const tryCalls = [
         () => exported(), // factory()
@@ -106,13 +96,11 @@ async function loadRouterFlexibly(relPath, opts = {}) {
         () => exported(opts.app ?? null), // factory(app)
         () => exported(opts.app ?? express), // factory(express)
         () => exported({ app: opts.app }), // factory({app})
-        () => exported.bind(null, opts.app) && null, // skip binding placeholder
       ];
 
       for (const callFn of tryCalls) {
         try {
           let result = callFn();
-          // إذا عادت Promise فانتظرها
           if (result && typeof result.then === 'function') {
             result = await result;
           }
@@ -120,25 +108,20 @@ async function loadRouterFlexibly(relPath, opts = {}) {
             return result;
           }
         } catch (e) {
-          // لا نريد مقاطعة السلسلة، بل نكمل لتجربة النمط التالي
-          // لكن نحتفظ بلوق تحذيري
           console.warn(`[warn] calling factory from ${relPath} threw:`, e?.message || e);
         }
       }
 
-      // أخيراً: إذا لم تُرجع أي Router لكن factory قد تكون صمّمت لترك التسجيل بنفسها على app
-      // (مثال: module.exports = (app) => { app.get(...) }) -> في هذه الحالة نعيد رجوع expressRouter فارغ
-      // ولكن نتحقق إن كانت الدالة استدعت على الأقل app (ليس مضمونًا). نجرب استدعاءها بتمرير app صريح.
+      // try once with an express() app in case factory registers routes directly on passed app
       try {
         const maybe = exported(opts.app ?? express());
         if (maybe && typeof maybe.then === 'function') await maybe;
       } catch (e) {
-        // تجاهل
+        // ignore
       }
       return null;
     }
 
-    // إن لم تكن دالة ولم تكن Router صالح -> فشل
     return null;
   } catch (err) {
     console.warn(`[warn] failed to load router ${relPath}:`, err?.message || err);
@@ -146,7 +129,32 @@ async function loadRouterFlexibly(relPath, opts = {}) {
   }
 }
 
-/* ------------------ Express + Routers ------------------ */
+/* ------------------ Sheets client helper ------------------ */
+async function createSheetsClient() {
+  const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CREDENTIALS_FILE;
+  if (!keyFile) {
+    console.warn('[sheets] No GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_CREDENTIALS_FILE set');
+    return null;
+  }
+  if (!fs.existsSync(keyFile)) {
+    console.warn('[sheets] keyFile not found at', keyFile);
+    return null;
+  }
+  try {
+    const { google } = await import('googleapis');
+    const auth = new google.auth.GoogleAuth({
+      keyFilename: keyFile,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+    return { auth, sheets };
+  } catch (e) {
+    console.warn('[sheets] createSheetsClient error:', e?.message || e);
+    return null;
+  }
+}
+
+/* ------------------ Express app setup ------------------ */
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -155,7 +163,7 @@ app.use(morgan('dev'));
 app.get('/', (req, res) => res.send('PyramidsMart Server Running ✅'));
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
-// تحميل وتركيب الروترات بأكثر من طريقة (مرن)
+/* ------------------ Dynamic router loading ------------------ */
 const clientsRouter = await loadRouterFlexibly('./routes/clients.js', { app });
 const syncRouter = await loadRouterFlexibly('./routes/sync.js', { app });
 
@@ -184,8 +192,110 @@ io.on('connection', (socket) => {
 
 app.set('io', io);
 
+/* ------------------ Poller: reconcile sheet -> app (deletions) ------------------ */
+/**
+ * Poller reads Clients!A2:A (external_id column) and compares to GET /api/clients result.
+ * If a client exists in app but its external_id is missing from sheet, poller attempts to delete it.
+ */
+const POLL_INTERVAL_MS = Number(process.env.SHEET_POLL_INTERVAL_MS || 60_000);
+
+async function pollSheetAndSync() {
+  try {
+    const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CREDENTIALS_FILE;
+    const SPREADSHEET_ID = process.env.SHEET_ID || process.env.SPREADSHEET_ID || null;
+    if (!keyFile || !SPREADSHEET_ID) {
+      console.warn('[poller] missing GOOGLE_APPLICATION_CREDENTIALS or SHEET_ID; poller paused');
+      return;
+    }
+
+    const { google } = await import('googleapis');
+    const auth = new google.auth.GoogleAuth({
+      keyFilename: keyFile,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    // اقرأ العمود A (external_id) بدءًا من الصف 2
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `Clients!A2:A`,
+    });
+    const sheetVals = resp.data.values || [];
+    const sheetExternalIds = new Set(sheetVals.map(r => (r[0] || '').toString()));
+
+    // استدعاء API الداخلي للحصول على العملاء الحاليين
+    const CLIENTS_API = `${process.env.BASE_URL || `http://localhost:${process.env.PORT || 10000}`}/api/clients`;
+
+    // GET /api/clients
+    let clientsResp;
+    try {
+      clientsResp = await fetch(CLIENTS_API, { method: 'GET' });
+    } catch (e) {
+      console.warn('[poller] fetch /api/clients failed:', e?.message || e);
+      return;
+    }
+    if (!clientsResp.ok) {
+      console.warn('[poller] failed to fetch /api/clients', clientsResp.status);
+      return;
+    }
+    const clients = await clientsResp.json();
+    if (!Array.isArray(clients)) {
+      console.warn('[poller] /api/clients did not return array');
+      return;
+    }
+
+    for (const client of clients) {
+      const ext = (client.external_id || '').toString();
+      if (!ext) continue;
+      if (!sheetExternalIds.has(ext)) {
+        console.log(`[poller] client ${client.id || client.external_id} missing in sheet -> deleting from app`);
+        const tryDeletePaths = [
+          `${CLIENTS_API}/${client.id}`, // DELETE by internal id
+          `${CLIENTS_API}/external/${encodeURIComponent(ext)}`, // alternate
+          `${CLIENTS_API}/${encodeURIComponent(ext)}`, // maybe external id used directly
+        ];
+        let deleted = false;
+        for (const p of tryDeletePaths) {
+          try {
+            const dresp = await fetch(p, { method: 'DELETE' });
+            if (dresp.ok) {
+              console.log(`[poller] deleted via ${p}`);
+              deleted = true;
+              const ioInst = app.get('io');
+              if (ioInst) ioInst.emit('clients:sync', { external_id: ext, action: 'deleted_by_sheet' });
+              break;
+            } else {
+              console.warn(`[poller] delete ${p} returned ${dresp.status}`);
+            }
+          } catch (e) {
+            console.warn('[poller] delete attempt failed:', e?.message || e);
+          }
+        }
+        if (!deleted) {
+          console.warn(`[poller] couldn't delete client ${ext} — no matching delete route responded`);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[poller] error:', err?.message || err);
+  }
+}
+
+// run periodically
+setInterval(() => {
+  pollSheetAndSync().catch(e => console.warn('[poller] unhandled error:', e?.message || e));
+}, POLL_INTERVAL_MS);
+
+// run once immediately
+pollSheetAndSync().catch(e => console.warn('[poller] initial run error:', e?.message || e));
+
 /* ------------------ Start server ------------------ */
 const PORT = Number(process.env.PORT || 10000);
-server.listen(PORT, '0.0.0.0', () => console.log(`✅ Server running on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log('[startup] GOOGLE_APPLICATION_CREDENTIALS =', process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CREDENTIALS_FILE);
+  console.log('[startup] SHEET_ID =', process.env.SHEET_ID || process.env.SPREADSHEET_ID);
+  console.log('[startup] SERVICE ACCOUNT EMAIL (env GOOGLE_SERVICE_ACCOUNT_EMAIL) =', process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '(not set)');
+});
 
 export { app, server, io };
