@@ -1,14 +1,26 @@
 // server/server.js
-// ✅ نسخة محسّنة متوافقة مع Render وتدعم مزامنة Google Sheets بشكل كامل وآمن
+// ✅ نسخة ESM (import/export) متوافقة مع Render وتدعم مزامنة Google Sheets
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
+import express from 'express';
+import http from 'http';
+import morgan from 'morgan';
+import cors from 'cors';
+import { Server } from 'socket.io';
+import { fileURLToPath } from 'url';
 
-// --- BEGIN: Render-friendly Google credentials bootstrap (ADD THIS) ---
+// لتوليد __dirname في ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// --- BEGIN: Render-friendly Google credentials bootstrap ---
 (function ensureGoogleCredentials() {
   try {
-    const envProvided = process.env.GOOGLE_CREDENTIALS_FILE || '/etc/secrets/google-service-key-new.json';
+    const envProvided =
+      process.env.GOOGLE_CREDENTIALS_FILE || '/etc/secrets/google-service-key-new.json';
     let targetPath = envProvided;
+
     if (process.env.GOOGLE_CREDENTIALS_FILE && !process.env.GOOGLE_CREDENTIALS_FILE.startsWith('/')) {
       targetPath = path.posix.join('/etc/secrets', path.basename(process.env.GOOGLE_CREDENTIALS_FILE));
     }
@@ -21,7 +33,10 @@ const path = require('path');
 
     if (process.env.GOOGLE_CREDENTIALS_JSON && process.env.GOOGLE_CREDENTIALS_JSON.trim()) {
       fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      fs.writeFileSync(targetPath, process.env.GOOGLE_CREDENTIALS_JSON, { encoding: 'utf8', mode: 0o600 });
+      fs.writeFileSync(targetPath, process.env.GOOGLE_CREDENTIALS_JSON, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
       process.env.GOOGLE_CREDENTIALS_FILE = targetPath;
       console.log('[startup] wrote GOOGLE_CREDENTIALS_JSON ->', targetPath);
       return;
@@ -36,33 +51,42 @@ const path = require('path');
       return;
     }
 
-    console.warn('[startup] Google credentials not found in env/file. Set GOOGLE_CREDENTIALS_FILE or GOOGLE_CREDENTIALS_JSON_B64 or GOOGLE_CREDENTIALS_JSON.');
+    console.warn(
+      '[startup] Google credentials not found. Set GOOGLE_CREDENTIALS_FILE or GOOGLE_CREDENTIALS_JSON_B64 or GOOGLE_CREDENTIALS_JSON.'
+    );
   } catch (e) {
-    console.warn('[startup] ensureGoogleCredentials error:', e && e.message ? e.message : e);
+    console.warn('[startup] ensureGoogleCredentials error:', e?.message || e);
   }
 })();
-// --- END: Render-friendly Google credentials bootstrap ---
+// --- END: Google credentials bootstrap ---
 
-// --- Continue with server startup (minimal safe bootstrap) ---
-const express = require('express');
-const http = require('http');
-const morgan = require('morgan');
-const cors = require('cors');
-const { Server } = require('socket.io');
-
+// --- Routers loading (import dynamically) ---
 let clientsRouter = null;
 let syncRouter = null;
+
 try {
-  clientsRouter = require('./routes/clients');
+  const clientsModule = await import('./routes/clients.js').catch(() => null);
+  if (clientsModule && typeof clientsModule.default === 'function') {
+    clientsRouter = clientsModule.default;
+  } else if (clientsModule) {
+    clientsRouter = clientsModule;
+  }
 } catch (e) {
   console.warn('[warn] clients router not found');
 }
+
 try {
-  syncRouter = require('./routes/sync');
+  const syncModule = await import('./routes/sync.js').catch(() => null);
+  if (syncModule && typeof syncModule.default === 'function') {
+    syncRouter = syncModule.default;
+  } else if (syncModule) {
+    syncRouter = syncModule;
+  }
 } catch (e) {
   console.warn('[warn] sync router not found');
 }
 
+// --- Express setup ---
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -74,6 +98,7 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 if (clientsRouter && typeof clientsRouter === 'function') app.use('/api/clients', clientsRouter());
 if (syncRouter && typeof syncRouter === 'function') app.use('/api/sync', syncRouter());
 
+// --- Socket.io setup ---
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
@@ -84,7 +109,8 @@ io.on('connection', (socket) => {
 
 app.set('io', io);
 
+// --- Start server ---
 const PORT = Number(process.env.PORT || 10000);
 server.listen(PORT, '0.0.0.0', () => console.log(`✅ Server running on port ${PORT}`));
 
-module.exports = { app, server, io };
+export { app, server, io };
