@@ -1,6 +1,7 @@
 // server/routes/sync.js
-// ESM router factory -> export default (app) => router
-// Requires: npm install googleapis
+// Router مُعاد كتابته بصيغة ESM كـ factory: export default (app) => router
+// يعتمد على googleapis (npm install googleapis)
+
 import express from 'express';
 import { google } from 'googleapis';
 import fs from 'fs';
@@ -10,8 +11,11 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/**
+ * يُنشئ عميل Google Sheets باستخدام GOOGLE_APPLICATION_CREDENTIALS أو GOOGLE_CREDENTIALS_FILE.
+ * يرجع { auth, sheets } أو null عند الفشل.
+ */
 function createSheetsClient() {
-  // Google client libraries use GOOGLE_APPLICATION_CREDENTIALS env var by default.
   const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CREDENTIALS_FILE;
   if (!keyFile) {
     console.warn('[sync] No GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_CREDENTIALS_FILE set');
@@ -35,49 +39,51 @@ function createSheetsClient() {
   }
 }
 
+/**
+ * Helper: Attempt to emit socket event if app has socket.io stored as 'io'
+ */
+function emitIo(app, event, payload) {
+  try {
+    if (!app || typeof app.get !== 'function') return;
+    const io = app.get('io');
+    if (io && typeof io.emit === 'function') io.emit(event, payload);
+  } catch (e) {
+    // ignore
+  }
+}
+
+/**
+ * The exported factory: export default (app) => router
+ */
 export default function initSyncRouter(app) {
   const router = express.Router();
 
-  // middleware simple logger for this router
+  // بسيط لوق لكل طلب داخل الراوتر
   router.use((req, res, next) => {
     console.log(`[sync] ${req.method} ${req.originalUrl}`);
     next();
   });
 
+  // صحة الراوتر
   router.get('/', (req, res) => res.json({ ok: true, sync: true }));
 
   /**
    * POST /sheet-changes
-   * Body example (your system already sends shape like this):
+   * يتوقع payload بشكل مشابه لما ظهر في لوجّاتك:
    * { action: 'reconcile'|'upsert'|'delete', sheets: [...], timestamp: '...' }
    */
   router.post('/sheet-changes', async (req, res) => {
-    const payload = req.body;
-    console.log('📩 /api/sync/sheet-changes payload:', JSON.stringify(payload, null, 2));
+    const payload = req.body || {};
+    console.log('📩 /api/sync/sheet-changes payload:', JSON.stringify(payload));
 
     const client = createSheetsClient();
     if (!client) {
-      // respond 200 so caller doesn't keep retrying heavily, but explain failure in body
-      console.warn('[sync] Sheets client unavailable — skipping push to Google Sheets');
+      console.warn('[sync] Sheets client unavailable — skipping Google Sheets operations');
+      // نُجيب 200 لتفادي retries متكررة من المرسل، مع توضيح السبب
       return res.status(200).json({ ok: false, reason: 'no_google_credentials' });
     }
 
     const { sheets } = client;
-    // helper: safe wrapper for API calls
-    async function safeBatchUpdate(spreadsheetId, requests) {
-      try {
-        const resp = await sheets.spreadsheets.batchUpdate({
-          spreadsheetId,
-          requestBody: { requests },
-        });
-        return resp.data;
-      } catch (e) {
-        console.warn('[sync] batchUpdate error:', e?.message || e);
-        throw e;
-      }
-    }
-
-    // NOTE: you must set SPREADSHEET_ID env or include sheet IDs in payload
     const SPREADSHEET_ID = process.env.SHEET_ID || process.env.SPREADSHEET_ID || null;
     if (!SPREADSHEET_ID) {
       console.warn('[sync] No SPREADSHEET_ID / SHEET_ID set in env');
@@ -85,19 +91,17 @@ export default function initSyncRouter(app) {
     }
 
     try {
-      // handle 'reconcile' action as bulk upsert example
+      // ----------------- RECONCILE (bulk update) -----------------
       if (payload.action === 'reconcile') {
-        // payload.sheets is an array containing sheetName and rows array (as your logs show)
         for (const sheet of payload.sheets || []) {
           const sheetName = sheet.sheetName;
           const rows = sheet.rows || [];
-          // Example approach: for each row, we will update a range by rowNumber.
-          // You should adapt ranges/columns to your sheet structure.
+
           for (const r of rows) {
             const rn = r.rowNumber;
             const data = r.data || {};
-            // Map object fields to columns — change this mapping according to your sheet layout:
-            // Example: A=external_id, B=last_modified, C=last_synced_by, D=status, E=name, F=phone ...
+
+            // ضبّط ترتيب الأعمدة هنا ليتوافق مع شيتك (A..K مثال)
             const values = [
               data.external_id ?? '',
               data.last_modified ?? '',
@@ -112,7 +116,7 @@ export default function initSyncRouter(app) {
               data.points ?? '',
             ];
 
-            const range = `${sheetName}!A${rn}:K${rn}`; // columns A..K
+            const range = `${sheetName}!A${rn}:K${rn}`;
             try {
               await sheets.spreadsheets.values.update({
                 spreadsheetId: SPREADSHEET_ID,
@@ -126,21 +130,14 @@ export default function initSyncRouter(app) {
             }
           }
         }
-        // Emit to sockets if app has io
-        try {
-          const io = app && app.get && app.get('io');
-          if (io) io.emit('clients:sync', { action: 'reconciled', timestamp: new Date().toISOString() });
-        } catch (e) {
-          // ignore
-        }
+
+        emitIo(app, 'clients:sync', { action: 'reconciled', ts: new Date().toISOString() });
         return res.json({ ok: true, action: 'reconcile_processed' });
       }
 
-      // handle upsert: payload should include sheetName and row data
+      // ----------------- UPSERT (append example) -----------------
       if (payload.action === 'upsert') {
         const { sheetName = 'Clients', row = {} } = payload;
-        // implement upsert logic appropriate to your sheet structure...
-        // Simple example: append row if no external_id match => here we append
         const appendValues = [
           row.external_id ?? '',
           row.last_modified ?? '',
@@ -154,6 +151,7 @@ export default function initSyncRouter(app) {
           row.notes ?? '',
           row.points ?? '',
         ];
+
         try {
           await sheets.spreadsheets.values.append({
             spreadsheetId: SPREADSHEET_ID,
@@ -162,6 +160,7 @@ export default function initSyncRouter(app) {
             insertDataOption: 'INSERT_ROWS',
             requestBody: { values: [appendValues] },
           });
+          emitIo(app, 'clients:sync', { external_id: row.external_id, action: 'upserted' });
           return res.json({ ok: true, action: 'appended' });
         } catch (e) {
           console.warn('[sync] append error:', e?.message || e);
@@ -169,14 +168,12 @@ export default function initSyncRouter(app) {
         }
       }
 
-      // handle delete marking: expect payload { action: 'delete', external_id: '...' }
+      // ----------------- DELETE (mark deleted) -----------------
       if (payload.action === 'delete') {
-        // Implementation note: deleting by external_id requires scanning sheet to find row number
-        // Here we do a safe scan of the sheet's A column (external_id) and mark the row deleted (e.g., set status='deleted')
         const ext = payload.external_id;
         if (!ext) return res.status(400).json({ ok: false, reason: 'missing_external_id' });
 
-        // read column A values
+        // قراءة العمود A (external_id) للعثور على رقم الصف
         const readResp = await sheets.spreadsheets.values.get({
           spreadsheetId: SPREADSHEET_ID,
           range: `Clients!A:A`,
@@ -185,22 +182,36 @@ export default function initSyncRouter(app) {
         let foundRow = -1;
         for (let i = 0; i < values.length; i++) {
           if ((values[i][0] || '').toString() === ext.toString()) {
-            foundRow = i + 1; // sheet rows are 1-indexed
+            foundRow = i + 1;
             break;
           }
         }
         if (foundRow === -1) {
           console.warn('[sync] external_id not found in sheet:', ext);
+          emitIo(app, 'clients:sync', { external_id: ext, action: 'delete_not_found' });
           return res.json({ ok: false, reason: 'not_found' });
         }
-        const markRange = `Clients!D${foundRow}`; // assume column D is status
+
+        // هنا نعلّم الحالة 'deleted' في عمود D (غيّر الخانة حسب تصميمك)
+        const markRange = `Clients!D${foundRow}`;
         await sheets.spreadsheets.values.update({
           spreadsheetId: SPREADSHEET_ID,
           range: markRange,
           valueInputOption: 'RAW',
           requestBody: { values: [['deleted']] },
         });
+
+        emitIo(app, 'clients:sync', { external_id: ext, action: 'deleted' });
         return res.json({ ok: true, markedRow: foundRow });
       }
 
-      // unknown acti
+      // ----------------- Unknown action -----------------
+      return res.status(400).json({ ok: false, reason: 'unknown_action', received: payload.action });
+    } catch (err) {
+      console.warn('[sync] handler error:', err?.message || err);
+      return res.status(500).json({ ok: false, error: err?.message || err });
+    }
+  });
+
+  return router;
+}
